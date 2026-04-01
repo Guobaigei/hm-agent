@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { defineTool } from '@roll-agent/sdk';
 import { z } from 'zod';
 
-import { getConfig } from '../../config.js';
-import { createAgentRuntime } from '../../runtime.js';
+import { getConfig } from '../../core/config.js';
+import { createAgentRuntime } from '../../core/runtime.js';
 
 const entityTypeSchema = z.enum(['brand', 'company', 'store', 'project']);
 

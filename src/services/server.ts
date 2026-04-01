@@ -1,10 +1,10 @@
 import Fastify from 'fastify';
 import { z } from 'zod';
 
-import type { AppConfig } from './config.js';
-import { getReadinessChecks } from './config.js';
-import { createAgentRuntime } from './runtime.js';
-import type { ChatRequest } from './types.js';
+import type { AppConfig } from '../core/config.js';
+import { getReadinessChecks } from '../core/config.js';
+import { createAgentRuntime } from '../core/runtime.js';
+import type { ChatRequest } from '../core/types.js';
 
 const chatRequestSchema = z.object({
   sessionId: z.string().trim().min(1),

@@ -7,6 +7,16 @@
 - 本地服务：提供 `POST /chat`、`GET /health`、`GET /ready`
 - Roll Subagent：通过 MCP `stdio` 暴露 `query_hm(message)`
 
+## 目录结构
+
+```text
+src/
+  core/   业务核心、配置、运行时、海绵接口适配
+  services/ HTTP 服务入口与路由装配
+  cli/    本地命令行对话入口
+  mcp/    Roll Subagent 的 MCP 入口与工具
+```
+
 ## 功能
 
 - 查询品牌、公司、门店、项目四类海绵实体
@@ -56,11 +66,30 @@ pnpm chat -- local-study
 
 当前项目也可以作为 `roll-agent` 的本地 subagent 接入。
 
-启动 MCP stdio 入口：
+开发时直接启动 MCP stdio 入口：
 
 ```bash
 pnpm mcp
 ```
+
+Roll 运行时会读取 `package.json#rollAgent`，实际启动构建产物：
+
+```json
+{
+  "start": {
+    "command": "node",
+    "args": ["dist/mcp/index.cjs"]
+  }
+}
+```
+
+所以在注册或更新到 Roll 之前，先构建一次：
+
+```bash
+pnpm build
+```
+
+`pnpm build` 现在使用 `esbuild` 对 `services`、`cli`、`mcp` 三个入口做 `bundle + minify`。产物会比 `tsc` 直出更难读，但它不是安全机制，只是降低可读性。
 
 在 `roll-agent` 中注册本地目录：
 

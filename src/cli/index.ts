@@ -3,8 +3,8 @@ import 'dotenv/config';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 
-import { getConfig } from './config.js';
-import { createAgentRuntime } from './runtime.js';
+import { getConfig } from '../core/config.js';
+import { createAgentRuntime } from '../core/runtime.js';
 
 async function main() {
   const config = getConfig();

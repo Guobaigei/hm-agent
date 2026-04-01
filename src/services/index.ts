@@ -1,6 +1,6 @@
 import 'dotenv/config';
 
-import { getConfig } from './config.js';
+import { getConfig } from '../core/config.js';
 import { createServer } from './server.js';
 
 async function main() {
@@ -21,4 +21,3 @@ async function main() {
 }
 
 void main();
-

@@ -8,11 +8,11 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "chat": "tsx src/cli.ts",
-    "mcp": "node --import tsx src/mcp/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "dev": "tsx watch src/services/index.ts",
+    "chat": "tsx src/cli/index.ts",
+    "mcp": "tsx src/mcp/index.ts",
+    "build": "node scripts/build.mjs",
+    "start": "node dist/services/index.cjs",
     "typecheck": "tsc --noEmit"
   },
   "rollAgent": {
@@ -23,15 +23,13 @@
     "start": {
       "command": "node",
       "args": [
-        "--import",
-        "tsx",
-        "src/mcp/index.ts"
+        "dist/mcp/index.cjs"
       ]
     }
   },
   "dependencies": {
-    "@roll-agent/sdk": "^0.1.2",
     "@ai-sdk/openai-compatible": "latest",
+    "@roll-agent/sdk": "^0.1.2",
     "ai": "latest",
     "dotenv": "latest",
     "fastify": "latest",
@@ -40,6 +38,7 @@
   },
   "devDependencies": {
     "@types/node": "latest",
+    "esbuild": "^0.27.4",
     "tsx": "latest",
     "typescript": "latest"
   }
