@@ -1,6 +1,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 
-import type { AppConfig } from './config.js';
+import type { AppConfig } from './config.ts';
 
 // 百炼提供 OpenAI 兼容接口，所以这里把模型适配单独收口。
 // 后续如果切换到别的平台，只需要改这个模块。

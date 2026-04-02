@@ -1,10 +1,10 @@
 import pino from 'pino';
 
-import { HmAgentService } from './agent.js';
-import type { AppConfig } from './config.js';
-import { HmApiClient } from './hm-client.js';
-import { createLanguageModel } from './model-provider.js';
-import { InMemorySessionStore } from './session-store.js';
+import { HmAgentService } from '../hm/agent.ts';
+import { HmApiClient } from '../hm/client.ts';
+import { InMemorySessionStore } from '../hm/sessionStore.ts';
+import type { AppConfig } from './config.ts';
+import { createLanguageModel } from './modelProvider.ts';
 
 type CreateAgentRuntimeOptions = {
   silentLogger?: boolean;
@@ -14,7 +14,7 @@ export function createAgentRuntime(
   config: AppConfig,
   options: CreateAgentRuntimeOptions = {},
 ) {
-  // 运行时依赖统一在这里组装，避免 HTTP 和 CLI 各自复制一套初始化逻辑。
+  // 运行时依赖统一在这里组装，避免 CLI、MCP 等入口各自复制一套初始化逻辑。
   const logger = pino({
     level: options.silentLogger ? 'silent' : config.logLevel,
   });

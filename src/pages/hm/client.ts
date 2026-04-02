@@ -7,7 +7,7 @@ import type {
   HmRequestStrategy,
   HmSearchResult,
   NormalizedEntity,
-} from './types.js';
+} from '../core/types.ts';
 
 // 每个实体只保留“路径 + 字段候选”这种配置数据，
 // 这样公共请求流程可以复用，差异留给 mapper 处理。
@@ -52,8 +52,7 @@ type HmClientOptions = {
 };
 
 type RequestAttempt = {
-  method: 'GET' | 'POST';
-  mode: 'query' | 'json' | 'form';
+  mode: 'json' | 'form';
 };
 
 export class HmApiClient {
@@ -177,15 +176,6 @@ export class HmApiClient {
         headers.set('Duliday-Token', this.options.token);
       }
 
-      if (attempt.mode === 'query') {
-        requestUrl.searchParams.set('searchName', searchName);
-        return await fetch(requestUrl, {
-          method: 'GET',
-          headers,
-          signal: controller.signal,
-        });
-      }
-
       if (attempt.mode === 'json') {
         headers.set('Content-Type', 'application/json');
         return await fetch(requestUrl, {
@@ -232,17 +222,15 @@ function stripLeadingSlash(path: string): string {
 
 function buildAttempts(strategy: HmRequestStrategy): RequestAttempt[] {
   switch (strategy) {
-    case 'get':
-      return [{ method: 'GET', mode: 'query' }];
     case 'post-json':
-      return [{ method: 'POST', mode: 'json' }];
+      return [{ mode: 'json' }];
     case 'post-form':
-      return [{ method: 'POST', mode: 'form' }];
+      return [{ mode: 'form' }];
     case 'auto':
     default:
       return [
-        { method: 'POST', mode: 'json' },
-        { method: 'POST', mode: 'form' },
+        { mode: 'json' },
+        { mode: 'form' },
       ];
   }
 }

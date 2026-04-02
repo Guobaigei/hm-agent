@@ -3,9 +3,7 @@ import type { LanguageModel } from 'ai';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 
-import type { AppConfig } from './config.js';
-import { HmApiClient } from './hm-client.js';
-import { InMemorySessionStore } from './session-store.js';
+import type { AppConfig } from '../core/config.ts';
 import type {
   CandidateEntity,
   ChatRequest,
@@ -14,7 +12,9 @@ import type {
   HmAggregateSearchResult,
   HmSearchResult,
   HmEntityType,
-} from './types.js';
+} from '../core/types.ts';
+import { HmApiClient } from './client.ts';
+import { InMemorySessionStore } from './sessionStore.ts';
 
 type AgentDependencies = {
   config: AppConfig;

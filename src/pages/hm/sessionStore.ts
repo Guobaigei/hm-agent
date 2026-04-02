@@ -1,4 +1,4 @@
-import type { ChatTurn, SessionSnapshot } from './types.js';
+import type { ChatTurn, SessionSnapshot } from '../core/types.ts';
 
 type SessionEntry = SessionSnapshot;
 

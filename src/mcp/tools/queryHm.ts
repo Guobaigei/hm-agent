@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { defineTool } from '@roll-agent/sdk';
 import { z } from 'zod';
 
-import { getConfig } from '../../core/config.js';
-import { createAgentRuntime } from '../../core/runtime.js';
+import { getConfig } from '../../pages/core/config.ts';
+import { createAgentRuntime } from '../../pages/core/runtime.ts';
 
 const entityTypeSchema = z.enum(['brand', 'company', 'store', 'project']);
 
@@ -42,13 +42,13 @@ function getMcpRuntime() {
 }
 
 export const queryHmTool = defineTool({
-  name: 'query_hm',
+  name: 'hm-query',
   description:
     '查询海绵系统中的品牌、公司、门店、项目等信息。输入自然语言问题，返回查询结果、澄清候选项和引用信息。',
   input: queryHmInputSchema,
   output: queryHmOutputSchema,
   execute: async ({ message }, ctx) => {
-    ctx.logger.info('query_hm called');
+    ctx.logger.info('queryHm called');
 
     try {
       const runtime = getMcpRuntime();
@@ -63,7 +63,7 @@ export const queryHmTool = defineTool({
       const errorMessage =
         error instanceof Error ? error.message : String(error);
 
-      ctx.logger.error(`query_hm failed: ${errorMessage}`);
+      ctx.logger.error(`queryHm failed: ${errorMessage}`);
 
       return {
         reply: `查询海绵系统失败：${errorMessage}`,
