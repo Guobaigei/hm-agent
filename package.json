@@ -1,12 +1,19 @@
 {
-  "name": "agent-hm",
+  "name": "hm-agent",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "description": "hm-agent：提供海绵项目、公司、门店、品牌信息查询功能",
   "type": "module",
   "packageManager": "pnpm@10.32.1",
   "engines": {
     "node": ">=22"
   },
+  "files": [
+    "dist",
+    "SKILL.md",
+    "references",
+    "README.md"
+  ],
   "scripts": {
     "chat": "tsx src/cli/index.ts",
     "build": "node scripts/build.mjs release",

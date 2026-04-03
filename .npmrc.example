@@ -1,0 +1,6 @@
+# Verdaccio registry example for publishing and installation.
+registry=https://your-verdaccio.example/
+always-auth=true
+
+# If you prefer token auth, replace the host below with your Verdaccio domain.
+//your-verdaccio.example/:_authToken=${NPM_TOKEN}

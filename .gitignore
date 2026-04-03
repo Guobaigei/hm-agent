@@ -1,7 +1,9 @@
 node_modules
 dist
 .env
+.npmrc
 .devtools
 coverage
 .pnpm-store
 .DS_Store
+*.tgz
