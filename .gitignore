@@ -6,4 +6,5 @@ dist
 coverage
 .pnpm-store
 .DS_Store
+roll.config.yaml
 *.tgz
