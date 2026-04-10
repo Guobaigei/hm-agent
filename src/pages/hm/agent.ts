@@ -10,6 +10,7 @@ import type {
   ChatResponse,
   Citation,
   HmAggregateSearchResult,
+  HmQueryResult,
   HmSearchResult,
   HmEntityType,
 } from '../core/types.ts';
@@ -41,6 +42,7 @@ export class HmAgentService {
     const session = this.dependencies.sessionStore.get(request.sessionId);
     const usedTools: string[] = [];
     const citations: Citation[] = [];
+    const results: HmQueryResult[] = [];
     let clarificationCandidates: CandidateEntity[] = [];
     let needsClarification = false;
     let toolFailureMessage: string | undefined;
@@ -65,6 +67,7 @@ export class HmAgentService {
           const output = toolResult.output as ToolOutput;
           const extractedCitations = extractCitations(output);
           citations.push(...extractedCitations);
+          results.push(...extractResults(output));
 
           if ('needsClarification' in output && output.needsClarification) {
             needsClarification = true;
@@ -115,6 +118,7 @@ export class HmAgentService {
       needsClarification,
       candidates: needsClarification ? clarificationCandidates : undefined,
       citations: dedupeCitations(citations),
+      results: dedupeResults(results),
       usedTools: dedupeStrings(usedTools),
     };
   }
@@ -165,6 +169,7 @@ function buildInstructions(): string {
     '如果结果唯一，直接总结关键字段并说明实体类型与 ID。',
     '如果结果有多条且用户意图指向单个对象，必须先追问澄清，不要替用户决定。',
     '如果用户意图是汇总或列表，可以直接给出列表摘要。',
+    '当结果包含多条对象或候选项时，优先使用 Markdown 表格展示，列为：实体类型、ID、名称、摘要、来源。',
     '优先保持回答简洁，关键引用格式使用 [实体类型:ID] 名称。',
   ].join('\n');
 }
@@ -242,6 +247,17 @@ function extractCitations(output: ToolOutput): Citation[] {
   }));
 }
 
+function extractResults(output: ToolOutput): HmQueryResult[] {
+  const matches = 'matches' in output ? output.matches : [];
+  return matches.map(match => ({
+    entityType: match.entityType,
+    id: match.id,
+    name: match.name,
+    summary: match.summary,
+    source: match.source,
+  }));
+}
+
 function dedupeCitations(citations: Citation[]): Citation[] {
   const seen = new Set<string>();
   const unique: Citation[] = [];
@@ -253,6 +269,22 @@ function dedupeCitations(citations: Citation[]): Citation[] {
     }
     seen.add(key);
     unique.push(citation);
+  }
+
+  return unique;
+}
+
+function dedupeResults(results: HmQueryResult[]): HmQueryResult[] {
+  const seen = new Set<string>();
+  const unique: HmQueryResult[] = [];
+
+  for (const result of results) {
+    const key = `${result.entityType}:${result.id}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(result);
   }
 
   return unique;

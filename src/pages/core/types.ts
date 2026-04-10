@@ -21,6 +21,7 @@ export type ChatResponse = {
   needsClarification: boolean;
   candidates?: CandidateEntity[];
   citations?: Citation[];
+  results?: HmQueryResult[];
   usedTools?: string[];
 };
 
@@ -32,6 +33,10 @@ export type CandidateEntity = {
 
 export type Citation = CandidateEntity & {
   source: string;
+};
+
+export type HmQueryResult = Citation & {
+  summary: string;
 };
 
 export type NormalizedEntity = {

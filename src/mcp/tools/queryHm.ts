@@ -25,13 +25,21 @@ const citationSchema = candidateSchema.extend({
   source: z.string(),
 });
 
+const queryResultSchema = citationSchema.extend({
+  summary: z.string(),
+});
+
 const queryHmOutputSchema = z.object({
   reply: z.string(),
   needsClarification: z.boolean(),
   candidates: z.array(candidateSchema).optional(),
   citations: z.array(citationSchema).optional(),
+  results: z.array(queryResultSchema).optional(),
   usedTools: z.array(z.string()).optional(),
 });
+
+type QueryHmOutput = z.infer<typeof queryHmOutputSchema>;
+type HmEntityType = z.infer<typeof entityTypeSchema>;
 
 let cachedRuntime: ReturnType<typeof createAgentRuntime> | undefined;
 
@@ -53,12 +61,14 @@ export const queryHmTool = defineTool({
     try {
       const runtime = getMcpRuntime();
 
-      return await runtime.agentService.chat({
+      const response = await runtime.agentService.chat({
         sessionId: `roll-mcp-${randomUUID()}`,
         message,
         userId: 'roll-core',
         channel: 'roll-mcp',
       });
+
+      return formatQueryHmOutput(response);
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -73,3 +83,82 @@ export const queryHmTool = defineTool({
     }
   },
 });
+
+function formatQueryHmOutput(response: QueryHmOutput): QueryHmOutput {
+  const reply = buildTableReply(response);
+
+  return {
+    ...response,
+    reply,
+  };
+}
+
+function buildTableReply(response: QueryHmOutput): string {
+  if (response.results?.length) {
+    const title = response.needsClarification
+      ? '查询到多个候选项，请确认你要查询哪一个：'
+      : '查询结果如下：';
+
+    return `${title}\n\n${formatResultsTable(response.results)}`;
+  }
+
+  if (response.needsClarification && response.candidates?.length) {
+    return [
+      '查询到多个候选项，请确认你要查询哪一个：',
+      '',
+      formatCandidatesTable(response.candidates),
+    ].join('\n');
+  }
+
+  return response.reply;
+}
+
+function formatResultsTable(results: NonNullable<QueryHmOutput['results']>): string {
+  const rows = results.map(result => [
+    formatEntityType(result.entityType),
+    result.id,
+    result.name,
+    result.summary || '-',
+    result.source,
+  ]);
+
+  return formatMarkdownTable(['实体类型', 'ID', '名称', '摘要', '来源'], rows);
+}
+
+function formatCandidatesTable(
+  candidates: NonNullable<QueryHmOutput['candidates']>,
+): string {
+  const rows = candidates.map(candidate => [
+    formatEntityType(candidate.entityType),
+    candidate.id,
+    candidate.name,
+  ]);
+
+  return formatMarkdownTable(['实体类型', 'ID', '名称'], rows);
+}
+
+function formatMarkdownTable(headers: string[], rows: string[][]): string {
+  return [
+    `| ${headers.map(escapeTableCell).join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map(row => `| ${row.map(escapeTableCell).join(' | ')} |`),
+  ].join('\n');
+}
+
+function escapeTableCell(value: string): string {
+  return String(value)
+    .replace(/\r?\n/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim() || '-';
+}
+
+function formatEntityType(entityType: HmEntityType): string {
+  const labels: Record<HmEntityType, string> = {
+    brand: '品牌',
+    company: '公司',
+    store: '门店',
+    project: '项目',
+  };
+
+  return labels[entityType];
+}

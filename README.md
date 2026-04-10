@@ -22,8 +22,25 @@ src/
 
 - 查询品牌、公司、门店、项目四类海绵实体
 - 统一使用 `searchName` 作为搜索参数
-- 通过 MCP `stdio` 对外暴露 `hm-query(message)`
+- 通过 MCP `stdio` 对外暴露 `hm-query(message)`，查询命中时 `reply` 使用 Markdown 表格返回
 - 发布包入口固定为 `dist/mcp/index.cjs`
+
+## hm-query 输出格式
+
+查询命中结果时，`reply` 会按 Markdown 表格输出：
+
+| 实体类型 | ID | 名称 | 摘要 | 来源 |
+| --- | --- | --- | --- | --- |
+| 品牌/公司/门店/项目 | 业务 ID | 业务名称 | 关键字段摘要 | 接口来源 |
+
+当命中多个候选项且需要用户澄清时，`reply` 会提示用户确认，并返回候选项表格。
+
+结构化字段仍会保留：
+
+- `results`：完整查询结果，包含 `entityType`、`id`、`name`、`summary`、`source`
+- `candidates`：需要澄清时的候选项
+- `citations`：引用信息
+- `usedTools`：本次使用过的内部查询工具
 
 ## 环境变量
 
