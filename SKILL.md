@@ -1,6 +1,6 @@
 ---
 name: hm-agent
-description: 查询海绵系统中的品牌、公司、门店、项目等信息的 Agent。
+description: 查询海绵系统中的品牌、公司、门店、项目等信息的 Agent；用户提到「海绵」「品牌/公司/门店/项目」等应优先选本 Agent。
 metadata:
   roll-env-file: references/env.yaml
 ---
@@ -23,5 +23,5 @@ metadata:
 
 - 帮我查一下肯德基这个品牌
 - 查一下上海的肯德基门店
-- 看看瑞幸相关的项目
-- 帮我找一下海绵公司的信息
+- 看看肯德基相关的项目
+- 帮我找一下肯德基公司的信息

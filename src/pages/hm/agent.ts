@@ -45,18 +45,20 @@ export class HmAgentService {
     let needsClarification = false;
     let toolFailureMessage: string | undefined;
 
+    // 生成5个工具
     const tools = createTools(this.dependencies.hmApiClient);
+    // 根据用户话语缩小工具范围。
     const activeTools = inferActiveTools(request.message);
 
     const agent = new ToolLoopAgent({
       model: this.dependencies.model,
       instructions: buildInstructions(),
       tools,
-      // 先用轻量规则把工具范围缩小，减少模型乱调工具的概率。
       activeTools,
+      // 循环4次，避免模型无限循环。
       stopWhen: stepCountIs(4),
       onStepFinish: event => {
-        // 每一步结束后收集工具使用痕迹，最后一并返回给调用方做调试或展示。
+        // 每一步结束后回调，结果拼接，用于最后返回的 ChatResponse。
         for (const toolResult of event.toolResults) {
           usedTools.push(String(toolResult.toolName));
 
@@ -83,6 +85,7 @@ export class HmAgentService {
       },
     });
 
+    // 提示词拼接，把历史对话、当前问题、用户上下文拼成一次完整调用。
     const prompt = buildPrompt({
       history: session.turns,
       message: request.message,
@@ -90,7 +93,9 @@ export class HmAgentService {
       channel: request.channel,
     });
 
+    // 调用模型，生成回复。
     const result = await agent.generate({ prompt });
+    // 如果模型调用失败，返回工具调用失败信息。
     const reply = toolFailureMessage ?? result.text.trim();
 
     // 会话存储使用“用户消息 + 助手回复”顺序追加，下一轮 prompt 会把它们带回去。

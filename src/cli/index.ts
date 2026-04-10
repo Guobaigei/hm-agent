@@ -17,13 +17,14 @@ async function main() {
     output,
   });
 
-  output.write('agent-hm CLI 已启动\n');
+  output.write('本地的 agent-hm CLI 已启动\n');
+  output.write('你可以在终端这里与海绵系统进行对话，查询你想知道的关于海绵公司/项目/门店/品牌的信息\n');
   output.write(`会话ID: ${sessionId}\n`);
   output.write('输入 /exit 退出，对话会保留在当前会话上下文中。\n\n');
 
   try {
     while (true) {
-      const message = (await rl.question('你: ')).trim();
+      const message = (await rl.question('老板请讲: ')).trim();
 
       if (!message) {
         continue;
