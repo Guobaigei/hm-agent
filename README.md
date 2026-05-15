@@ -12,8 +12,8 @@
 ```text
 src/
   pages/
-    core/ 配置、类型、运行时、模型适配
-    hm/   海绵查询 Agent、Client、Session
+    core/     配置、运行时、模型适配
+    hm-query/ 海绵查询 Agent、Client、Session
   cli/    本地命令行对话入口
   mcp/    Roll subagent 的 MCP 入口与工具
 ```
@@ -53,7 +53,10 @@ src/
 可选配置：
 
 - `AI_BASE_URL`，默认 `https://dashscope.aliyuncs.com/compatible-mode/v1`
-- `AI_MODEL`，默认 `qwen3.5-plus`
+- `AI_MODEL`，默认 `qwen3.6-plus`
+- `AI_FALLBACK_MODEL`，默认 `deepseek-v4-pro`
+- `AI_FALLBACK_BASE_URL`，默认 `https://api.deepseek.com`
+- `DEEPSEEK_API_KEY`，DeepSeek 备用模型鉴权 key；不配置时不会启用 DeepSeek 备用模型
 - `HM_REQUEST_STRATEGY`，支持 `auto`、`post-json`、`post-form`
 
 说明：
@@ -168,6 +171,9 @@ roll run hm-agent hm-query --input-json '{"message":"帮我查一下肯德基这
 还需要在 `roll.config.yaml` 中注入与 `references/env.yaml` 一致的环境变量，例如：
 
 - `AI_API_KEY`
+- `AI_FALLBACK_MODEL`
+- `AI_FALLBACK_BASE_URL`
+- `DEEPSEEK_API_KEY`
 - `HM_BASE_URL`
 - `HM_DULIDAY_TOKEN`
 

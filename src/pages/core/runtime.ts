@@ -1,10 +1,10 @@
 import pino from 'pino';
 
-import { HmAgentService } from '../hm/agent.ts';
-import { HmApiClient } from '../hm/client.ts';
-import { InMemorySessionStore } from '../hm/sessionStore.ts';
+import { HmApiClient } from '../hm-query/client.ts';
+import { HmQueryService } from '../hm-query/service.ts';
+import { InMemorySessionStore } from '../hm-query/sessionStore.ts';
 import type { AppConfig } from './config.ts';
-import { createLanguageModel } from './modelProvider.ts';
+import { createLanguageModels } from './modelProvider.ts';
 
 type CreateAgentRuntimeOptions = {
   silentLogger?: boolean;
@@ -34,9 +34,9 @@ export function createAgentRuntime(
     config.sessionMaxTurns,
   );
 
-  const agentService = new HmAgentService({
+  const hmQueryService = new HmQueryService({
     config,
-    model: createLanguageModel(config),
+    models: createLanguageModels(config),
     hmApiClient,
     sessionStore,
     logger,
@@ -46,6 +46,6 @@ export function createAgentRuntime(
     logger,
     hmApiClient,
     sessionStore,
-    agentService,
+    hmQueryService,
   };
 }

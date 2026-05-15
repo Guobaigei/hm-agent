@@ -61,7 +61,7 @@ export const queryHmTool = defineTool({
     try {
       const runtime = getMcpRuntime();
 
-      const response = await runtime.agentService.chat({
+      const response = await runtime.hmQueryService.chat({
         sessionId: `roll-mcp-${randomUUID()}`,
         message,
         userId: 'roll-core',

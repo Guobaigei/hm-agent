@@ -1,12 +1,15 @@
 import { z } from 'zod';
 
-import type { HmRequestStrategy } from './types.ts';
+export type HmRequestStrategy = 'auto' | 'post-json' | 'post-form';
 
 // 所有环境变量统一在这里做解析和兜底，避免业务代码里到处判断 process.env。
 const envSchema = z.object({
   LOG_LEVEL: z.string().default('info'),
-  AI_MODEL: z.string().default('qwen3.5-plus'),
+  AI_MODEL: z.string().default('qwen3.6-plus'),
+  AI_FALLBACK_MODEL: z.string().trim().min(1).default('deepseek-v4-pro'),
+  AI_FALLBACK_BASE_URL: z.string().url().default('https://api.deepseek.com'),
   AI_API_KEY: z.string().optional(),
+  DEEPSEEK_API_KEY: z.string().optional(),
   AI_BASE_URL: z
     .string()
     .url()
@@ -24,7 +27,10 @@ const envSchema = z.object({
 export type AppConfig = {
   logLevel: string;
   aiModel: string;
+  aiFallbackModel?: string;
+  aiFallbackBaseUrl: string;
   aiApiKey?: string;
+  deepseekApiKey?: string;
   aiBaseUrl: string;
   hmBaseUrl: string;
   hmDulidayToken?: string;
@@ -48,7 +54,13 @@ export function getConfig(): AppConfig {
   cachedConfig = {
     logLevel: parsed.LOG_LEVEL,
     aiModel: parsed.AI_MODEL,
+    aiFallbackModel:
+      parsed.AI_FALLBACK_MODEL === parsed.AI_MODEL
+        ? undefined
+        : parsed.AI_FALLBACK_MODEL,
+    aiFallbackBaseUrl: parsed.AI_FALLBACK_BASE_URL,
     aiApiKey: parsed.AI_API_KEY,
+    deepseekApiKey: parsed.DEEPSEEK_API_KEY,
     aiBaseUrl: parsed.AI_BASE_URL,
     hmBaseUrl: parsed.HM_BASE_URL,
     hmDulidayToken: parsed.HM_DULIDAY_TOKEN,

@@ -36,7 +36,7 @@ async function main() {
       }
 
       try {
-        const response = await runtime.agentService.chat({
+        const response = await runtime.hmQueryService.chat({
           sessionId,
           message,
           userId,

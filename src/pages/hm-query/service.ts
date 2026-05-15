@@ -1,9 +1,9 @@
 import { ToolLoopAgent, stepCountIs, tool } from 'ai';
-import type { LanguageModel } from 'ai';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 
 import type { AppConfig } from '../core/config.ts';
+import type { NamedLanguageModel } from '../core/modelProvider.ts';
 import type {
   CandidateEntity,
   ChatRequest,
@@ -13,13 +13,13 @@ import type {
   HmQueryResult,
   HmSearchResult,
   HmEntityType,
-} from '../core/types.ts';
+} from './types.ts';
 import { HmApiClient } from './client.ts';
 import { InMemorySessionStore } from './sessionStore.ts';
 
 type AgentDependencies = {
   config: AppConfig;
-  model: LanguageModel;
+  models: NamedLanguageModel[];
   hmApiClient: HmApiClient;
   sessionStore: InMemorySessionStore;
   logger: Logger;
@@ -27,11 +27,21 @@ type AgentDependencies = {
 
 type ToolOutput = HmSearchResult | HmAggregateSearchResult;
 
+type ModelAttemptResult = {
+  text: string;
+  usedTools: string[];
+  citations: Citation[];
+  results: HmQueryResult[];
+  clarificationCandidates: CandidateEntity[];
+  needsClarification: boolean;
+  toolFailureMessage?: string;
+};
+
 const searchNameSchema = z.object({
   searchName: z.string().trim().min(1).describe('要在海绵系统中搜索的名称关键词'),
 });
 
-export class HmAgentService {
+export class HmQueryService {
   constructor(private readonly dependencies: AgentDependencies) {}
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -40,53 +50,11 @@ export class HmAgentService {
 
     const now = Date.now();
     const session = this.dependencies.sessionStore.get(request.sessionId);
-    const usedTools: string[] = [];
-    const citations: Citation[] = [];
-    const results: HmQueryResult[] = [];
-    let clarificationCandidates: CandidateEntity[] = [];
-    let needsClarification = false;
-    let toolFailureMessage: string | undefined;
 
     // 生成5个工具
     const tools = createTools(this.dependencies.hmApiClient);
     // 根据用户话语缩小工具范围。
     const activeTools = inferActiveTools(request.message);
-
-    const agent = new ToolLoopAgent({
-      model: this.dependencies.model,
-      instructions: buildInstructions(),
-      tools,
-      activeTools,
-      // 循环4次，避免模型无限循环。
-      stopWhen: stepCountIs(4),
-      onStepFinish: event => {
-        // 每一步结束后回调，结果拼接，用于最后返回的 ChatResponse。
-        for (const toolResult of event.toolResults) {
-          usedTools.push(String(toolResult.toolName));
-
-          const output = toolResult.output as ToolOutput;
-          const extractedCitations = extractCitations(output);
-          citations.push(...extractedCitations);
-          results.push(...extractResults(output));
-
-          if ('needsClarification' in output && output.needsClarification) {
-            needsClarification = true;
-            clarificationCandidates = output.clarificationCandidates;
-          }
-        }
-
-        for (const part of event.content) {
-          if (part.type !== 'tool-error') {
-            continue;
-          }
-
-          toolFailureMessage = formatToolFailureMessage(
-            String(part.toolName),
-            part.error,
-          );
-        }
-      },
-    });
 
     // 提示词拼接，把历史对话、当前问题、用户上下文拼成一次完整调用。
     const prompt = buildPrompt({
@@ -97,9 +65,13 @@ export class HmAgentService {
     });
 
     // 调用模型，生成回复。
-    const result = await agent.generate({ prompt });
+    const result = await this.generateWithFallback({
+      prompt,
+      tools,
+      activeTools,
+    });
     // 如果模型调用失败，返回工具调用失败信息。
-    const reply = toolFailureMessage ?? result.text.trim();
+    const reply = result.toolFailureMessage ?? result.text.trim();
 
     // 会话存储使用“用户消息 + 助手回复”顺序追加，下一轮 prompt 会把它们带回去。
     this.dependencies.sessionStore.append(request.sessionId, {
@@ -115,13 +87,106 @@ export class HmAgentService {
 
     return {
       reply,
-      needsClarification,
-      candidates: needsClarification ? clarificationCandidates : undefined,
-      citations: dedupeCitations(citations),
-      results: dedupeResults(results),
-      usedTools: dedupeStrings(usedTools),
+      needsClarification: result.needsClarification,
+      candidates: result.needsClarification ? result.clarificationCandidates : undefined,
+      citations: dedupeCitations(result.citations),
+      results: dedupeResults(result.results),
+      usedTools: dedupeStrings(result.usedTools),
     };
   }
+
+  private async generateWithFallback(input: {
+    prompt: string;
+    tools: ToolRegistry;
+    activeTools: Array<keyof ToolRegistry>;
+  }): Promise<ModelAttemptResult> {
+    let lastError: unknown;
+
+    for (const [index, modelCandidate] of this.dependencies.models.entries()) {
+      try {
+        return await runModelAttempt({
+          modelCandidate,
+          prompt: input.prompt,
+          tools: input.tools,
+          activeTools: input.activeTools,
+        });
+      } catch (error) {
+        lastError = error;
+        this.dependencies.logger.warn(
+          {
+            model: modelCandidate.name,
+            provider: modelCandidate.provider,
+            isFallbackAvailable: index < this.dependencies.models.length - 1,
+            error: formatUnknownError(error),
+          },
+          'HM query model attempt failed',
+        );
+      }
+    }
+
+    throw lastError;
+  }
+}
+
+async function runModelAttempt(input: {
+  modelCandidate: NamedLanguageModel;
+  prompt: string;
+  tools: ToolRegistry;
+  activeTools: Array<keyof ToolRegistry>;
+}): Promise<ModelAttemptResult> {
+  const usedTools: string[] = [];
+  const citations: Citation[] = [];
+  const results: HmQueryResult[] = [];
+  let clarificationCandidates: CandidateEntity[] = [];
+  let needsClarification = false;
+  let toolFailureMessage: string | undefined;
+
+  const agent = new ToolLoopAgent({
+    model: input.modelCandidate.model,
+    instructions: buildInstructions(),
+    tools: input.tools,
+    activeTools: input.activeTools,
+    // 循环4次，避免模型无限循环。
+    stopWhen: stepCountIs(4),
+    onStepFinish: event => {
+      // 每一步结束后回调，结果拼接，用于最后返回的 ChatResponse。
+      for (const toolResult of event.toolResults) {
+        usedTools.push(String(toolResult.toolName));
+
+        const output = toolResult.output as ToolOutput;
+        citations.push(...extractCitations(output));
+        results.push(...extractResults(output));
+
+        if ('needsClarification' in output && output.needsClarification) {
+          needsClarification = true;
+          clarificationCandidates = output.clarificationCandidates;
+        }
+      }
+
+      for (const part of event.content) {
+        if (part.type !== 'tool-error') {
+          continue;
+        }
+
+        toolFailureMessage = formatToolFailureMessage(
+          String(part.toolName),
+          part.error,
+        );
+      }
+    },
+  });
+
+  const result = await agent.generate({ prompt: input.prompt });
+
+  return {
+    text: result.text,
+    usedTools,
+    citations,
+    results,
+    clarificationCandidates,
+    needsClarification,
+    toolFailureMessage,
+  };
 }
 
 function createTools(hmApiClient: HmApiClient) {
@@ -297,6 +362,10 @@ function dedupeStrings(values: string[]): string[] {
 function formatToolFailureMessage(toolName: string, error: unknown): string {
   const errorMessage = error instanceof Error ? error.message : String(error);
   return `查询海绵系统失败，工具 ${toolName} 调用异常：${errorMessage}`;
+}
+
+function formatUnknownError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function assertChatReadiness(config: AppConfig): void {

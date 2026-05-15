@@ -74,8 +74,6 @@ export type HmListClientConfig = {
   summaryCandidates: string[];
 };
 
-export type HmRequestStrategy = 'auto' | 'post-json' | 'post-form';
-
 export type SessionSnapshot = {
   sessionId: string;
   turns: ChatTurn[];

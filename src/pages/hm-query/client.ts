@@ -4,10 +4,10 @@ import type {
   HmAggregateSearchResult,
   HmEntityType,
   HmListClientConfig,
-  HmRequestStrategy,
   HmSearchResult,
   NormalizedEntity,
-} from '../core/types.ts';
+} from './types.ts';
+import type { HmRequestStrategy } from '../core/config.ts';
 
 // 每个实体只保留“路径 + 字段候选”这种配置数据，
 // 这样公共请求流程可以复用，差异留给 mapper 处理。
