@@ -18,9 +18,9 @@ async function main() {
   });
 
   output.write('本地的 agent-hm CLI 已启动\n');
-  output.write('你可以在终端这里与海绵系统进行对话，查询你想知道的关于海绵公司/项目/门店/品牌的信息\n');
+  output.write('你可以在终端这里与海绵系统进行对话，查询品牌/公司/门店/项目，也可以查询、新建、编辑岗位\n');
   output.write(`会话ID: ${sessionId}\n`);
-  output.write('输入 /exit 退出，对话会保留在当前会话上下文中。\n\n');
+  output.write('输入 /exit 退出，对话会保留在当前会话上下文中。岗位新建/编辑会先生成预览，确认后才提交。\n\n');
 
   try {
     while (true) {
@@ -36,16 +36,39 @@ async function main() {
       }
 
       try {
-        const response = await runtime.hmQueryService.chat({
-          sessionId,
+        if (isCapabilityQuestion(message)) {
+          output.write(`\nAgent: ${buildCapabilityReply()}\n\n`);
+          continue;
+        }
+
+        const hasPendingPositionDraft = Boolean(
+          runtime.positionDraftStore.getBySession(sessionId),
+        );
+        const hasPositionContext =
+          runtime.positionDraftStore.hasPositionContext(sessionId);
+        const usePositionService = shouldUsePositionService(
           message,
-          userId,
-          channel: 'cli',
-        });
+          hasPendingPositionDraft,
+          hasPositionContext,
+        );
+
+        const response = usePositionService
+          ? await runtime.positionService.chat({
+              sessionId,
+              message,
+              userId,
+              channel: 'cli',
+            })
+          : await runtime.hmQueryService.chat({
+              sessionId,
+              message,
+              userId,
+              channel: 'cli',
+            });
 
         output.write(`\nAgent: ${response.reply}\n`);
 
-        if (response.needsClarification && response.candidates?.length) {
+        if ('candidates' in response && response.needsClarification && response.candidates?.length) {
           output.write('候选项:\n');
           for (const candidate of response.candidates) {
             output.write(`- [${candidate.entityType}:${candidate.id}] ${candidate.name}\n`);
@@ -70,3 +93,45 @@ async function main() {
 }
 
 void main();
+
+function isCapabilityQuestion(message: string): boolean {
+  return /你.*(功能|能做什么|会什么)|有什么功能|支持什么/.test(message);
+}
+
+function shouldUsePositionService(
+  message: string,
+  hasPendingPositionDraft: boolean,
+  hasPositionContext: boolean,
+): boolean {
+  if (hasPendingPositionDraft) {
+    return true;
+  }
+
+  if (hasPositionContext && /详情|详细|完整信息|列给我|展开|这个岗位|该岗位|刚刚/.test(message)) {
+    return true;
+  }
+
+  if (hasPositionContext && /编辑|修改|更新|调整|改成|改为|改一下|把/.test(message)) {
+    return true;
+  }
+
+  return /岗位|职位|工种|招聘人数|招聘门店|用工形式|用工类型|兼职类型|合作模式|工作内容|工作地址|试工|培训|试用期|面试|发薪|薪资|工资|社保|公积金|商业保险|年龄|性别|学历|排班|上下班|供应商/.test(message);
+}
+
+function buildCapabilityReply(): string {
+  return [
+    '我现在支持两类能力：',
+    '',
+    '1. 查询海绵实体：品牌、公司、门店、项目。',
+    '2. 岗位管理：查询岗位、新建岗位、编辑岗位。',
+    '',
+    '岗位新建/编辑会先生成预览，不会直接写入；你确认保存或确认发布后才会提交。发布前我会要求你明确是否通知供应商。',
+    '',
+    '示例：',
+    '- 查询已发布服务员岗位',
+    '- 新建一个肯德基服务员兼职岗位，月结，薪资20元/时',
+    '- 编辑岗位 ID 123，把招聘人数改为 10 人',
+    '- 确认保存',
+    '- 不通知供应商并发布',
+  ].join('\n');
+}

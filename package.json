@@ -18,7 +18,8 @@
     "chat": "tsx src/cli/index.ts",
     "build": "node scripts/build.mjs release",
     "build:dev": "node scripts/build.mjs dev",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "rollAgent": {
     "runtime": {

@@ -3,6 +3,9 @@ import pino from 'pino';
 import { HmApiClient } from '../hm-query/client.ts';
 import { HmQueryService } from '../hm-query/service.ts';
 import { InMemorySessionStore } from '../hm-query/sessionStore.ts';
+import { PositionApiClient } from '../position/client.ts';
+import { PositionDraftStore } from '../position/draftStore.ts';
+import { PositionService } from '../position/service.ts';
 import type { AppConfig } from './config.ts';
 import { createLanguageModels } from './modelProvider.ts';
 
@@ -33,6 +36,13 @@ export function createAgentRuntime(
     config.sessionTtlMs,
     config.sessionMaxTurns,
   );
+  const positionDraftStore = new PositionDraftStore(config.sessionTtlMs);
+  const positionApiClient = new PositionApiClient({
+    baseUrl: config.hmBaseUrl,
+    token: config.hmDulidayToken,
+    timeoutMs: config.hmTimeoutMs,
+    logger,
+  });
 
   const hmQueryService = new HmQueryService({
     config,
@@ -41,11 +51,20 @@ export function createAgentRuntime(
     sessionStore,
     logger,
   });
+  const positionService = new PositionService({
+    config,
+    positionApiClient,
+    draftStore: positionDraftStore,
+    logger,
+  });
 
   return {
     logger,
     hmApiClient,
     sessionStore,
     hmQueryService,
+    positionApiClient,
+    positionDraftStore,
+    positionService,
   };
 }
