@@ -127,7 +127,7 @@ export class PositionApiClient {
   }>> {
     const data = await this.post<ListResponse<Record<string, unknown>>>('/store/list', {
       pageNum: 1,
-      pageSize: 20,
+      pageSize: 100,
       searchName: params.searchName,
       projectIds: params.projectIds,
       brandIds: params.brandIds,
@@ -156,6 +156,14 @@ export class PositionApiClient {
     }
 
     return stores;
+  }
+
+  async getJobTemplateByJobType(jobTypeId: number): Promise<{ jobContent?: string }> {
+    const data = await this.get<unknown>(`/job/getJobTemplateByJobType?jobTypeId=${encodeURIComponent(String(jobTypeId))}`);
+
+    return {
+      jobContent: isObjectRecord(data) ? normalizeString(data.jobContent) : undefined,
+    };
   }
 
   async getJobTypes(): Promise<OptionEntity[]> {

@@ -382,6 +382,7 @@ export type PendingPositionDraft = {
   action: PositionCommitAction;
   values: PositionFormValues;
   originalValues?: PositionFormValues;
+  userPatch?: Partial<PositionFormValues>;
   jobBasicInfoId?: number;
   sendMsgToSupplier?: boolean;
   createdAt: number;
@@ -395,6 +396,7 @@ export type ParsedPositionMessage = {
   intent: PositionIntent;
   action?: PositionCommitAction;
   sendMsgToSupplier?: boolean;
+  detailRequested?: boolean;
   jobBasicInfoId?: number;
   sourceJobBasicInfoId?: number;
   inheritFromContext?: boolean;

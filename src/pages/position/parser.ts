@@ -33,6 +33,7 @@ const KNOWN_CITY_NAMES = [
   '福州',
   '合肥',
 ];
+const STANDALONE_JOB_ID_PATTERN = /(?<![A-Za-z0-9-])(\d{3,})(?![A-Za-z0-9-])/g;
 
 export function parsePositionMessage(message: string): ParsedPositionMessage {
   const normalizedMessage = message.trim();
@@ -51,6 +52,7 @@ export function parsePositionMessage(message: string): ParsedPositionMessage {
 
   const action = inferCommitAction(normalizedMessage);
   const sendMsgToSupplier = inferSupplierNotification(normalizedMessage);
+  const detailRequested = inferDetailRequested(normalizedMessage);
   const sourceJobBasicInfoId = parseSourceJobId(normalizedMessage);
   const inheritFromContext = isContextInheritanceMessage(normalizedMessage, sourceJobBasicInfoId);
   const jobBasicInfoId = parsePrimaryJobId(normalizedMessage);
@@ -66,6 +68,7 @@ export function parsePositionMessage(message: string): ParsedPositionMessage {
     intent,
     action,
     sendMsgToSupplier,
+    detailRequested,
     jobBasicInfoId,
     sourceJobBasicInfoId,
     inheritFromContext,
@@ -73,6 +76,10 @@ export function parsePositionMessage(message: string): ParsedPositionMessage {
     patch,
     references,
   };
+}
+
+function inferDetailRequested(message: string): boolean {
+  return /详情|详细|完整信息|列给我|展开|(?:这个|该|此)岗位(?:的)?信息|(?:这个|该|此)职位(?:的)?信息|(?:岗位|职位)信息[:：\s]+[^\s，,。；;]/.test(message);
 }
 
 function inferIntent(
@@ -100,11 +107,15 @@ function inferIntent(
     return 'create_preview';
   }
 
-  if (/新建|新增|创建|发布一个|发一个/.test(message)) {
+  if (/新建|新增|创建|发布一个|发一个|(?:帮我|给我|请)?(?:先)?建(?:一个|个)?/.test(message)) {
     return 'create_preview';
   }
 
-  if (/编辑|修改|更新|调整|改成|改为/.test(message) || context.jobBasicInfoId && context.hasPatch) {
+  if (inferDetailRequested(message) && !isExplicitEditMessage(message)) {
+    return 'search';
+  }
+
+  if (isExplicitEditMessage(message) || context.jobBasicInfoId && context.hasPatch) {
     return 'edit_preview';
   }
 
@@ -136,11 +147,11 @@ function inferCommitAction(message: string): PositionCommitAction | undefined {
 }
 
 function inferSupplierNotification(message: string): boolean | undefined {
-  if (/不通知供应商|无需通知供应商|不要通知供应商|不发供应商|不通知/.test(message)) {
+  if (/不通知供应商|无需通知供应商|不要通知供应商|不发供应商|(?:^|[，,。；;\s])不通知(?:[，,。；;\s]|$)/.test(message)) {
     return false;
   }
 
-  if (/通知供应商|发送供应商|发供应商|通知/.test(message)) {
+  if (/通知供应商|发送供应商|发供应商/.test(message)) {
     return true;
   }
 
@@ -162,30 +173,36 @@ function parsePrimaryJobId(message: string): number | undefined {
     return genericId;
   }
 
-  if (/编辑|修改|更新|调整|改成|改为/.test(message) && /岗位|职位|岗位信息|职位信息/.test(message)) {
-    return matchNumber(message, /(?<![\d.])(\d{3,})(?![\d.])/);
+  if (isExplicitEditMessage(message) && /岗位|职位|岗位信息|职位信息/.test(message)) {
+    return matchStandaloneJobId(message);
+  }
+
+  if (isDetailByStandaloneJobIdMessage(message)) {
+    return matchStandaloneJobId(message);
   }
 
   return undefined;
 }
 
 function parseSourceJobId(message: string): number | undefined {
-  if (!isInheritanceCreateMessage(message)) {
+  if (!isInheritanceCreateMessage(message) && !isSourceInheritanceMessage(message)) {
     return undefined;
   }
 
   return (
     matchNumber(message, /(?:照着|按照|按|基于|参考|复制|克隆|继承)(?:一下|下)?(?:岗位|职位)?\s*(?:ID|id|编号)?[:：#\s]*(\d{3,})/i) ??
     matchNumber(message, /(?:岗位|职位)\s*(?:ID|id|编号)[:：#\s]*(\d{3,})(?:.*?)(?:复制|克隆|继承|新建|创建)/i) ??
-    matchNumber(message, /(?:复制|克隆|继承|照着|按照|基于|参考)(?:.*?)(?<![\d.])(\d{3,})(?![\d.])/)
+    matchNumber(message, /(?:其他|其它|剩下|其余).*(?:跟|和|同|按|照着|参考)(?:岗位|职位)?\s*(?:ID|id|编号)?[:：#\s]*(\d{3,})/i) ??
+    matchNumber(message, /(?:跟|和|同|按|照着|参考)(?:岗位|职位)?\s*(?:ID|id|编号)?[:：#\s]*(\d{3,})(?:.*?)(?:一致|一样|相同|补齐|就可以)/i) ??
+    matchNumber(message, /(?:复制|克隆|继承|照着|按照|基于|参考)(?:.*?)(?<![A-Za-z0-9-])(\d{3,})(?![A-Za-z0-9-])/)
   );
 }
 
 function isContextInheritanceMessage(message: string, sourceJobBasicInfoId?: number): boolean {
   return (
     !sourceJobBasicInfoId &&
-    isInheritanceCreateMessage(message) &&
-    /这个岗位|该岗位|当前岗位|刚刚的岗位|刚才的岗位|上个岗位|最近的岗位|这个职位|该职位/.test(message)
+    (isInheritanceCreateMessage(message) || isSourceInheritanceMessage(message)) &&
+    /这个岗位|该岗位|当前岗位|刚刚的岗位|刚才的岗位|上个岗位|最近的岗位|这个职位|该职位|其他信息|其它信息|剩下|其余/.test(message)
   );
 }
 
@@ -193,6 +210,13 @@ function isInheritanceCreateMessage(message: string): boolean {
   return (
     /复制|克隆|继承|照着|按照|基于|参考/.test(message) &&
     /岗位|职位|新建|新增|创建/.test(message)
+  );
+}
+
+function isSourceInheritanceMessage(message: string): boolean {
+  return (
+    /其他|其它|剩下|其余|补齐/.test(message) &&
+    /一致|一样|相同|照着|按照|参考|跟|和|同/.test(message)
   );
 }
 
@@ -235,29 +259,36 @@ function parseReferences(
   jsonPatch?: Record<string, unknown>,
 ): ParsedPositionMessage['references'] {
   const references: ParsedPositionMessage['references'] = {};
+  const compositeCreateName = extractCreateCompositeName(message);
   const projectName = jsonPatch?.projectId
     ? undefined
     : stringFromJson(jsonPatch, 'projectName') ??
       matchText(message, /项目(?:名称)?[:：\s]+([^\s，,。；;]+)/) ??
       matchText(message, /项目(?:名称)?(?:改为|改成|调整为|换成|换为|设为|设置为)[:：\s]*([^\s，,。；;]+)/) ??
+      matchText(message, /(?:^|[，,。；;\s])项目(?:名称)?(?:是|为|叫)?\s*([\u4e00-\u9fa5A-Za-z0-9_-]+?项目)(?:[，,。；;\s]|$)/) ??
       matchText(message, /([\u4e00-\u9fa5A-Za-z0-9_-]+?)项目(?:下|的|里)?/);
   const brandName = jsonPatch?.brandId
     ? undefined
     : stringFromJson(jsonPatch, 'brandName') ??
       matchText(message, /品牌(?:名称)?[:：\s]+([^\s，,。；;]+)/) ??
       matchText(message, /品牌(?:名称)?(?:改为|改成|调整为|换成|换为|设为|设置为)[:：\s]*([^\s，,。；;]+)/) ??
-      matchText(message, /([\u4e00-\u9fa5A-Za-z0-9_-]+?)品牌(?:下|的|里)?/);
+      matchText(message, /(?:^|[，,。；;\s])品牌(?:名称)?(?:是|为|叫)?\s*([^\s，,。；;]+)/) ??
+      matchText(message, /([\u4e00-\u9fa5A-Za-z0-9_-]+?)品牌(?:下|的|里)?/) ??
+      compositeCreateName?.brandName;
   const positionCategoryName =
     jsonPatch?.positionCategory
       ? undefined
       : stringFromJson(jsonPatch, 'positionCategoryName') ??
-        matchText(message, /(?:职位类别|岗位类别|工种)[:：\s]*([^\s，,。；;]+)/);
+        matchText(message, /(?:职位类别|岗位类别|工种)[:：\s]*([^\s，,。；;]+)/) ??
+        compositeCreateName?.positionName;
   const storeName =
     jsonPatch?.recruitStoreAllocations
       ? undefined
       : stringFromJson(jsonPatch, 'storeName') ??
         matchText(message, /(?:门店|店铺)(?:名称)?[:：\s]+([^\s，,。；;]+)/) ??
-        matchText(message, /(?:门店|店铺)(?:名称)?(?:改为|改成|调整为|换成|换为|设为|设置为)[:：\s]*([^\s，,。；;]+)/);
+        matchText(message, /(?:门店|店铺)(?:名称)?(?:改为|改成|调整为|换成|换为|设为|设置为)[:：\s]*([^\s，,。；;]+)/) ??
+        matchText(message, /(?:^|[，,。；;\s])(?:门店|店铺)(?:名称)?(?:是|为|叫)?\s*([^\s，,。；;]+)/) ??
+        compositeCreateName?.storeName;
 
   const cleanedProjectName = projectName ? cleanupReferenceName(projectName) : undefined;
   const cleanedBrandName = brandName ? cleanupReferenceName(brandName) : undefined;
@@ -285,6 +316,7 @@ function parseReferences(
 
 function parseTextPatch(message: string): Partial<PositionFormValues> {
   const patch: Partial<PositionFormValues> = {};
+  const compositeCreateName = extractCreateCompositeName(message);
 
   const projectId = matchNumber(message, /项目\s*(?:ID|id)[:：#\s]*(\d+)/i);
   if (projectId !== undefined) {
@@ -304,6 +336,7 @@ function parseTextPatch(message: string): Partial<PositionFormValues> {
   const positionName =
     matchText(message, /岗位名称[:：\s]*([^\n，,。；;]+)/) ??
     matchText(message, /(?:岗位名称|岗位名)(?:改为|改成|调整为|设为|设置为|命名为|叫)[:：\s]*([^\n，,。；;]+)/) ??
+    compositeCreateName?.positionName ??
     matchText(message, /(?:新建|新增|创建)(?:一个)?([^\s，,。；;]+?)(?:岗位|职位)/);
   if (positionName) {
     const cleanedPositionName = cleanupName(positionName);
@@ -386,7 +419,7 @@ function parseTextPatch(message: string): Partial<PositionFormValues> {
     patch.settlementCycle = '4';
   }
 
-  if (/当日结|当天结/.test(message)) {
+  if (/当日结|当天结|今天结/.test(message)) {
     patch.payDay = '1';
   } else if (/次日结|第二天结/.test(message)) {
     patch.payDay = '2';
@@ -421,17 +454,17 @@ function parseTextPatch(message: string): Partial<PositionFormValues> {
     patch.socialInsuranceList = socialInsuranceList;
   }
 
-  const ageRange = message.match(/(\d{2})\s*(?:-|~|到|至)\s*(\d{2})\s*岁/);
+  const ageRange = parseAgeRange(message);
   if (ageRange) {
-    patch.ageMin = Number(ageRange[1]);
-    patch.ageMax = Number(ageRange[2]);
+    patch.ageMin = ageRange[0];
+    patch.ageMax = ageRange[1];
   }
 
   if (/男女不限|性别不限/.test(message)) {
     patch.genders = ['1', '2'];
-  } else if (/只招男|男生|男性/.test(message)) {
+  } else if (/只招男|男生|男性|男工|(?:招|招聘|需要|限)?[一二两三四五六七八九十\d]+\s*(?:名|个)?男(?!女|不限)/.test(message)) {
     patch.genders = ['1'];
-  } else if (/只招女|女生|女性/.test(message)) {
+  } else if (/只招女|女生|女性|女工|(?:招|招聘|需要|限)?[一二两三四五六七八九十\d]+\s*(?:名|个)?女(?!不限)/.test(message)) {
     patch.genders = ['2'];
   }
 
@@ -486,10 +519,7 @@ function parseJobIdList(message: string): number[] {
     return [];
   }
 
-  const standaloneIds = Array.from(message.matchAll(/(?<![\d.])(\d{3,})(?![\d.])/g))
-    .map(match => Number(match[1]))
-    .filter(item => Number.isFinite(item));
-  return uniqueNumbers(standaloneIds);
+  return findStandaloneJobIds(message);
 }
 
 function parseScopedIdList(message: string, pattern: RegExp): number[] {
@@ -565,7 +595,16 @@ function parseSchedule(message: string, patch: Partial<PositionFormValues>) {
   const timeRange = message.match(/(\d{1,2}:\d{2})\s*(?:-|~|到|至)\s*(\d{1,2}:\d{2})/);
   if (timeRange) {
     patch.dailyScheduleMode = '2';
-    patch.dailyTimeRange = [timeRange[1], timeRange[2]];
+    patch.dailyTimeRange = [formatColonClockTime(timeRange[1]), formatColonClockTime(timeRange[2])];
+  }
+
+  const chineseTimeRange = message.match(/(\d{1,2})(?:点|时)(半|[0-5]?\d分?)?\s*(?:-|~|到|至)\s*(\d{1,2})(?:点|时)(半|[0-5]?\d分?)?/);
+  if (!timeRange && chineseTimeRange) {
+    patch.dailyScheduleMode = '2';
+    patch.dailyTimeRange = [
+      formatChineseClockTime(chineseTimeRange[1], chineseTimeRange[2]),
+      formatChineseClockTime(chineseTimeRange[3], chineseTimeRange[4]),
+    ];
   }
 
   const dailyDuration = matchNumber(message, /(?:每天|每日|日工作|灵活排班)\s*(\d+(?:\.\d+)?)\s*(?:小时|h)/i);
@@ -599,7 +638,7 @@ function parseProcess(message: string, patch: Partial<PositionFormValues>) {
     patch.interviewTimeMode = '1';
   } else if (/周期面试|周期时间/.test(message)) {
     patch.interviewTimeMode = '2';
-  } else if (/等待通知/.test(message)) {
+  } else if (/面试[^，,。；;\n]*等待通知|等待通知[^，,。；;\n]*面试|面试时间[^，,。；;\n]*等待通知/.test(message)) {
     patch.interviewTimeMode = '4';
   }
 
@@ -629,8 +668,8 @@ function parseProcess(message: string, patch: Partial<PositionFormValues>) {
 
 function parseStoreAllocation(message: string): PositionStoreAllocation | undefined {
   const storeId = matchNumber(message, /门店\s*(?:ID|id)[:：#\s]*(\d+)/i);
-  const recruitCount = matchNumber(message, /(?:招聘人数|招聘|招|人数)(?:改为|改成|调整为|设为|设置为|为|是)?[:：\s]*(\d+)\s*人?/);
-  const thresholdMultiplier = matchNumber(message, /阈值[:：\s]*(\d+(?:\.\d+)?)\s*倍/);
+  const recruitCount = matchCountNumber(message, /(?:招聘人数|招聘|招|人数)(?:改为|改成|调整为|设为|设置为|为|是)?[:：\s]*([一二两三四五六七八九十\d]+)\s*(?:名|个)?人?/);
+  const thresholdValue = matchNumber(message, /(?:招聘阈值|阈值)[:：\s]*(\d+(?:\.\d+)?)\s*(?:倍)?/);
 
   if (storeId === undefined && recruitCount === undefined) {
     return undefined;
@@ -640,8 +679,103 @@ function parseStoreAllocation(message: string): PositionStoreAllocation | undefi
     id: storeId ? String(storeId) : 'store-1',
     storeId,
     recruitCount,
-    threshold: thresholdMultiplier ? thresholdMultiplier * 10 : undefined,
+    threshold: thresholdValue === undefined ? undefined : normalizeThresholdValue(thresholdValue),
   };
+}
+
+function parseAgeRange(message: string): [number, number] | undefined {
+  const ageNumberPattern = String.raw`(?<!\d)(\d{1,2})(?!\d)`;
+  const patterns = [
+    new RegExp(String.raw`年龄(?:在|为|是)?\s*${ageNumberPattern}\s*(?:-|~|到|至)\s*${ageNumberPattern}\s*(?:岁|之间)?`),
+    new RegExp(String.raw`${ageNumberPattern}\s*(?:-|~|到|至)\s*${ageNumberPattern}\s*(?:岁|之间)`),
+  ];
+
+  for (const pattern of patterns) {
+    const matched = message.match(pattern);
+    if (!matched) {
+      continue;
+    }
+    const min = Number(matched[1]);
+    const max = Number(matched[2]);
+    if (Number.isFinite(min) && Number.isFinite(max)) {
+      return [min, max];
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeThresholdValue(value: number): number {
+  return value <= 10 ? value * 10 : value;
+}
+
+type CompositeCreateName = {
+  brandName: string;
+  storeName: string;
+  positionName: string;
+};
+
+function extractCreateCompositeName(message: string): CompositeCreateName | undefined {
+  const createTail = matchText(message, /(?:新建|新增|创建|发布|发)(?:一个|一条)?(?:岗位|职位)[：:\s，,]*(.+)$/);
+  const candidates = [
+    matchText(message, /(?:新建|新增|创建|发布|发)(?:一个|一条)?(?:岗位|职位)[：:\s，,]+([^，,。；;\n]+)/),
+    ...(createTail?.split(/[，,。；;\n]/) || []),
+    matchText(message, /(?:新建|新增|创建|发布|发)(?:一个|一条)?\s*([^，,。；;\n]+?)(?:岗位|职位)/),
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = parseCompositeCreateNameCandidate(candidate);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+function parseCompositeCreateNameCandidate(value?: string): CompositeCreateName | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parts = cleanupName(value)
+    .replace(/^(?:岗位|职位)[：:\s]*/, '')
+    .split(/[-_—–]+/)
+    .map(part => cleanupName(part))
+    .filter(Boolean);
+
+  if (parts.length < 3) {
+    return undefined;
+  }
+
+  const brandName = parts[0];
+  const storeName = parts[1];
+  let positionParts = parts.slice(2);
+  if (positionParts.length > 1 && isEmploymentNameSuffix(positionParts[positionParts.length - 1])) {
+    positionParts = positionParts.slice(0, -1);
+  }
+
+  const positionName = cleanupName(positionParts.join('-'));
+  if (!brandName || !storeName || !positionName) {
+    return undefined;
+  }
+
+  return { brandName, storeName, positionName };
+}
+
+function isEmploymentNameSuffix(value: string): boolean {
+  return /^(全职|兼职|小时工|寒假工|暑假工|长期工|短期工|临时工)$/.test(value);
+}
+
+function formatChineseClockTime(hourText: string, minuteText?: string): string {
+  const hour = Number(hourText);
+  const minute = minuteText === '半' ? 30 : (normalizeNumber(minuteText?.replace('分', '')) ?? 0);
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function formatColonClockTime(value: string): string {
+  const [hour = '0', minute = '00'] = value.split(':');
+  return `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
 }
 
 function normalizeSalaryUnit(value?: string): PositionFormValues['baseSalaryUnit'] | undefined {
@@ -669,6 +803,65 @@ function matchNumber(message: string, pattern: RegExp): number | undefined {
   return normalizeNumber(matched[1]);
 }
 
+function matchCountNumber(message: string, pattern: RegExp): number | undefined {
+  const matched = message.match(pattern);
+  if (!matched) {
+    return undefined;
+  }
+  return normalizeNumber(matched[1]) ?? parseChineseSmallNumber(matched[1]);
+}
+
+function parseChineseSmallNumber(value: string): number | undefined {
+  const normalized = value.trim();
+  const digits: Record<string, number> = {
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+  if (normalized in digits) {
+    return digits[normalized];
+  }
+  if (normalized === '十') {
+    return 10;
+  }
+  const tenMatch = normalized.match(/^十([一二两三四五六七八九])$/);
+  if (tenMatch) {
+    return 10 + digits[tenMatch[1]];
+  }
+  const tensMatch = normalized.match(/^([一二两三四五六七八九])十([一二两三四五六七八九])?$/);
+  if (tensMatch) {
+    return digits[tensMatch[1]] * 10 + (tensMatch[2] ? digits[tensMatch[2]] : 0);
+  }
+  return undefined;
+}
+
+function matchStandaloneJobId(message: string): number | undefined {
+  return findStandaloneJobIds(message)[0];
+}
+
+function isDetailByStandaloneJobIdMessage(message: string): boolean {
+  return (
+    /详情|详细|完整信息|岗位信息|职位信息|看下|看一下|看看|查看|检查/.test(message) &&
+    !hasNumberUnitContext(message) &&
+    findStandaloneJobIds(message).length > 0
+  );
+}
+
+function findStandaloneJobIds(message: string): number[] {
+  return uniqueNumbers(
+    Array.from(message.matchAll(STANDALONE_JOB_ID_PATTERN))
+      .map(match => Number(match[1]))
+      .filter(item => Number.isFinite(item)),
+  );
+}
+
 function matchText(message: string, pattern: RegExp): string | undefined {
   const matched = message.match(pattern);
   return matched?.[1]?.trim();
@@ -679,27 +872,62 @@ function extractImplicitJobName(message: string): string | undefined {
     return undefined;
   }
 
-  const matched = message.match(/(?:查询|搜索|查|找|看|看看|看下|看一下)(?:一下|下)?(.+?)(?:岗位|职位)(?:信息|列表)?/);
-  if (!matched) {
-    return undefined;
+  const patterns = [
+    /(?:这个|该|此)?(?:岗位|职位)(?:的)?(?:信息|详情|详细|完整信息)[:：\s]+(.+)$/,
+    /(?:岗位|职位)(?:信息|详情|详细|完整信息)[:：\s]+(.+)$/,
+    /^(.+?)(?:查询|搜索|查|找|看|看看|看下|看一下|查看)(?:一下|下)?(?:这个|该|此)?(?:岗位|职位)?(?:详情|详细|完整信息|信息)$/,
+    /(?:查询|搜索|查|找|看|看看|看下|看一下|查看)(?:一下|下)?(.+?)(?:岗位|职位)?(?:详情|详细|完整信息)/,
+    /^(.+?)(?:这个|该|此)?(?:岗位|职位)(?:$|(?:看|看看|看下|看一下|查|查询|搜索|找|详情|详细|信息|列表|都有哪些|有哪些|有哪?些|哪些))/,
+    /(?:查询|搜索|查|找|看|看看|看下|看一下)(?:一下|下)?(.+?)(?:岗位|职位)(?:信息|列表)?/,
+  ];
+
+  for (const pattern of patterns) {
+    const matched = message.match(pattern);
+    if (!matched) {
+      continue;
+    }
+
+    const value = cleanupImplicitSearchName(matched[1]
+      .replace(/^(根据|一下|下|帮我|我想让你帮我|我想让你|想让你|帮我看下|帮我看一下)/, '')
+      .replace(/已发布|未发布|已下架|下架|在招/g, '')
+      .replace(buildLeadingCityPattern(), '')
+      .replace(STANDALONE_JOB_ID_PATTERN, ' ')
+      .replace(/[^\s，,。；;]+?项目(?:下|的|里)?/g, '')
+      .replace(/[^\s，,。；;]+?品牌(?:下|的|里)?/g, '')
+      .replace(/城市区域|城市|地区|区域/g, '')
+      .replace(/^(的|下的)?(所有|全部|哪些|都有哪些|有哪?些)+/, '')
+      .trim());
+
+    if (value && value.length <= 80 && !['询', '一下', '下', '这个', '该', '此'].includes(value)) {
+      return value;
+    }
   }
 
-  const value = matched[1]
-    .replace(/^(根据|一下|下|帮我|我想让你帮我|我想让你|想让你|帮我看下|帮我看一下)/, '')
-    .replace(/已发布|未发布|已下架|下架|在招/g, '')
-    .replace(/(北京市|北京|上海市|上海|天津市|天津|重庆市|重庆|广州市|广州|深圳市|深圳|杭州市|杭州|南京市|南京|苏州市|苏州|成都市|成都|武汉市|武汉|西安市|西安|长沙市|长沙|郑州市|郑州|青岛市|青岛|宁波市|宁波|厦门市|厦门|福州市|福州|合肥市|合肥)/g, '')
-    .replace(/[\d,\s，]+/g, ' ')
-    .replace(/[^\s，,。；;]+?项目(?:下|的|里)?/g, '')
-    .replace(/[^\s，,。；;]+?品牌(?:下|的|里)?/g, '')
-    .replace(/城市|地区|区域|城市区域|市/g, '')
-    .replace(/^(的|下的)?(所有|全部|哪些|都有哪些|有哪?些)+/, '')
+  return undefined;
+}
+
+function buildLeadingCityPattern(): RegExp {
+  return new RegExp(`^(${KNOWN_CITY_NAMES.join('|')})市?的?`);
+}
+
+function cleanupImplicitSearchName(value: string): string {
+  return cleanupName(value)
+    .replace(buildLeadingCityPattern(), '')
+    .replace(/(?:这个|该|此)?(?:岗位|职位)$/, '')
+    .replace(/(?:查询|搜索|查一下|查下|查|找一下|找下|找|看一下|看下|看|看看)(?:这个|该|此)?$/, '')
+    .replace(/(?:相关)(?:的)?$/, '')
+    .replace(/(?:这个|该|此)$/, '')
+    .replace(/(?:的)?(?:所有|全部|都有哪些|有哪些|有哪?些|哪些)$/, '')
+    .replace(/(?:相关)(?:的)?$/, '')
     .trim();
+}
 
-  if (!value || value.length > 20 || ['询', '一下', '下'].includes(value)) {
-    return undefined;
-  }
-
-  return value;
+function isExplicitEditMessage(message: string): boolean {
+  return (
+    /编辑|改成|改为|调整为|设置为|设为/.test(message) ||
+    /(?:修改|更新|调整)(?:一下|下|这个|该|此|岗位|职位|\s|ID|id|编号|(?=\d))/.test(message) ||
+    /帮我(?:把|将).+?(?:改|调整|设置)/.test(message)
+  );
 }
 
 function extractKnownCityName(message: string): string | undefined {

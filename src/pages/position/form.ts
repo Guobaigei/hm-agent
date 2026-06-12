@@ -43,7 +43,7 @@ import type {
   PositionPreviewField,
   PositionStoreAllocation,
 } from './types.ts';
-import { hasMeaningfulValue, normalizeNumber, normalizeString } from './utils.ts';
+import { hasMeaningfulValue, normalizeNumber } from './utils.ts';
 
 export function createDefaultPositionFormValues(): PositionFormValues {
   return {
@@ -115,6 +115,10 @@ function mergeStoreAllocations(
 ): PositionStoreAllocation[] | undefined {
   if (!patchRows) {
     return baseRows;
+  }
+
+  if (patchRows.length === 0) {
+    return undefined;
   }
 
   if (!baseRows?.length) {
@@ -438,7 +442,7 @@ export function validatePositionValues(values: PositionFormValues): {
       validationErrors.push({
         field: 'recruitStoreAllocations',
         label: '招聘门店',
-        message: '招聘门店必须包含门店 ID 或门店名称',
+        message: '请补充当前项目、品牌下已存在的招聘门店；如果还没有门店，请先在 HM2.0 创建门店后再回来创建岗位。',
       });
     }
     if (!row.recruitCount || row.recruitCount <= 0) {
@@ -491,8 +495,8 @@ const FIELD_OPTION_HINTS: Partial<Record<keyof PositionFormValues, OptionItem[]>
 };
 
 const FIELD_TEXT_HINTS: Partial<Record<keyof PositionFormValues, string>> = {
-  projectId: '可填写项目 ID 或项目名称，例如：项目 上海肯德基。',
-  brandId: '可填写品牌 ID 或品牌名称，例如：品牌 肯德基。',
+  projectId: '请填写已存在的项目 ID 或项目名称，例如：项目 上海肯德基。如果系统里还没有项目，请先在 HM2.0 创建项目后再回来创建岗位。',
+  brandId: '请填写已存在且属于当前项目的品牌 ID 或品牌名称，例如：品牌 肯德基。如果系统里还没有品牌，请先在 HM2.0 创建品牌后再回来创建岗位。',
   positionName: '填写岗位短名称，例如：岗位名称 服务员。',
   positionCategory: '可填写职位类别 ID 或工种名称，例如：工种 服务员。',
   workContent: '填写岗位职责，例如：工作内容 负责门店服务和基础清洁。',
@@ -516,7 +520,7 @@ const FIELD_TEXT_HINTS: Partial<Record<keyof PositionFormValues, string>> = {
   trialDuration: '填写试工周期，例如：试工 1 天。',
   trainingDuration: '填写培训周期，例如：培训 2 天。',
   trainingContent: '填写培训内容，例如：培训内容 岗前流程和服务标准。',
-  recruitStoreAllocations: '填写招聘门店和人数，例如：门店 ID 123，招聘 5 人，阈值 3 倍。',
+  recruitStoreAllocations: '请填写当前项目、品牌下已存在的招聘门店和人数，例如：门店 ID 123，招聘 5 人，阈值 3 倍。如果还没有门店，请先在 HM2.0 创建门店后再回来创建岗位。',
 };
 
 function buildMissingFieldMessage(field: string): string {

@@ -13,6 +13,7 @@ import { parsePositionMessage } from './parser.ts';
 import { buildCreateJobPayload } from './payload.ts';
 import { PositionService } from './service.ts';
 import type { PositionApiClient } from './client.ts';
+import type { PositionCreatePlanner, PositionSearchPlanner } from './planner.ts';
 import type { PositionFormValues } from './types.ts';
 
 const baseConfig: AppConfig = {
@@ -169,6 +170,23 @@ describe('position parser', () => {
     assert.equal(parsed.search.searchJobName, undefined);
   });
 
+  it('parses bare job ids in detail requests as direct detail targets', () => {
+    const parsed = parsePositionMessage('看下1914的详情');
+
+    assert.equal(parsed.intent, 'search');
+    assert.equal(parsed.detailRequested, true);
+    assert.equal(parsed.jobBasicInfoId, 1914);
+    assert.equal(parsed.search.searchJobName, undefined);
+  });
+
+  it('supports five-digit job ids in detail requests', () => {
+    const parsed = parsePositionMessage('看下12345的详情');
+
+    assert.equal(parsed.intent, 'search');
+    assert.equal(parsed.detailRequested, true);
+    assert.equal(parsed.jobBasicInfoId, 12345);
+  });
+
   it('parses bare numbers as job ids in edit context', () => {
     const parsed = parsePositionMessage('帮我修改下 1914 的岗位信息，将用工形式改为全职');
 
@@ -195,11 +213,47 @@ describe('position parser', () => {
     assert.deepEqual(parsed.references.cityNames, ['上海']);
   });
 
+  it('treats embedded numeric codes in position names as name text instead of job ids', () => {
+    const parsed = parsePositionMessage('test050900-上海徐汇绿地店-迎宾-小时工这个岗位看下详情');
+
+    assert.equal(parsed.intent, 'search');
+    assert.equal(parsed.search.jobBasicInfoIds, undefined);
+    assert.equal(parsed.search.searchJobName, 'test050900-上海徐汇绿地店-迎宾-小时工');
+    assert.deepEqual(parsed.references.cityNames, ['上海']);
+  });
+
+  it('does not treat edit-like words inside a position name as an edit request', () => {
+    const parsed = parsePositionMessage('test051901-五店-修改等待通知测试2-全职 看下这个岗位信息');
+
+    assert.equal(parsed.intent, 'search');
+    assert.equal(parsed.detailRequested, true);
+    assert.equal(parsed.search.searchJobName, 'test051901-五店-修改等待通知测试2-全职');
+    assert.equal(parsed.sendMsgToSupplier, undefined);
+    assert.equal(parsed.patch.interviewTimeMode, undefined);
+  });
+
+  it('parses trailing position names after "this position info" wording', () => {
+    const parsed = parsePositionMessage('你帮我看下这个岗位的信息 test051901-五店-修改等待通知测试2-全职');
+
+    assert.equal(parsed.intent, 'search');
+    assert.equal(parsed.detailRequested, true);
+    assert.equal(parsed.search.searchJobName, 'test051901-五店-修改等待通知测试2-全职');
+    assert.equal(parsed.sendMsgToSupplier, undefined);
+    assert.equal(parsed.patch.interviewTimeMode, undefined);
+  });
+
   it('cleans trailing quantifiers from implicit position search names', () => {
     const parsed = parsePositionMessage('你帮我查下果蔬好的所有岗位');
 
     assert.equal(parsed.intent, 'search');
     assert.equal(parsed.search.searchJobName, '果蔬好');
+  });
+
+  it('cleans generic related-position wording down to the searchable keyword', () => {
+    const parsed = parsePositionMessage('你帮我查下肯德基相关的岗位');
+
+    assert.equal(parsed.intent, 'search');
+    assert.equal(parsed.search.searchJobName, '肯德基');
   });
 
   it('parses explicit brand scoped search without treating the brand as job name', () => {
@@ -243,6 +297,85 @@ describe('position parser', () => {
     assert.deepEqual(parsed.patch.genders, ['1', '2']);
     assert.equal(parsed.patch.recruitStoreAllocations?.[0]?.recruitCount, 3);
     assert.equal(parsed.patch.recruitStoreAllocations?.[0]?.threshold, 15);
+  });
+
+  it('parses lightweight create requirements with Chinese counts and age ranges', () => {
+    const parsed = parsePositionMessage('我现在要新建一个岗位，我现在要招两名女性，年龄在20-40之间');
+
+    assert.equal(parsed.intent, 'create_preview');
+    assert.equal(parsed.patch.recruitStoreAllocations?.[0]?.recruitCount, 2);
+    assert.deepEqual(parsed.patch.genders, ['2']);
+    assert.equal(parsed.patch.ageMin, 20);
+    assert.equal(parsed.patch.ageMax, 40);
+  });
+
+  it('parses HM style composite create names and loose Chinese work times', () => {
+    const parsed = parsePositionMessage(
+      '老板请讲: 创建一个岗位，果蔬好-人民广场店-理货员，招2名女性年龄在20到40岁，上班时间为8点到14点',
+    );
+
+    assert.equal(parsed.intent, 'create_preview');
+    assert.equal(parsed.references.brandName, '果蔬好');
+    assert.deepEqual(parsed.references.storeNames, ['人民广场店']);
+    assert.equal(parsed.references.positionCategoryName, '理货员');
+    assert.equal(parsed.patch.positionName, '理货员');
+    assert.equal(parsed.patch.recruitStoreAllocations?.[0]?.recruitCount, 2);
+    assert.deepEqual(parsed.patch.genders, ['2']);
+    assert.equal(parsed.patch.ageMin, 20);
+    assert.equal(parsed.patch.ageMax, 40);
+    assert.equal(parsed.patch.dailyScheduleMode, '2');
+    assert.deepEqual(parsed.patch.dailyTimeRange, ['08:00', '14:00']);
+  });
+
+  it('treats casual build wording as create intent', () => {
+    const parsed = parsePositionMessage('帮我建上海肯德基项目肯德基静安寺店服务员');
+
+    assert.equal(parsed.intent, 'create_preview');
+  });
+
+  it('does not parse salaries or work time ranges as age ranges', () => {
+    const parsed = parsePositionMessage(
+      '新建岗位，招聘人数2，工资25元/小时，日结，当日结，综合薪资150到150元/天，上班时间8:00-14:00',
+    );
+
+    assert.equal(parsed.patch.ageMin, undefined);
+    assert.equal(parsed.patch.ageMax, undefined);
+    assert.deepEqual(parsed.patch.dailyTimeRange, ['08:00', '14:00']);
+  });
+
+  it('parses threshold values even when the user omits multiplier wording', () => {
+    const parsed = parsePositionMessage('新建岗位，招聘人数2，招聘阈值1.5');
+
+    assert.equal(parsed.patch.recruitStoreAllocations?.[0]?.recruitCount, 2);
+    assert.equal(parsed.patch.recruitStoreAllocations?.[0]?.threshold, 15);
+  });
+
+  it('parses compact labels and casual gender/payday wording', () => {
+    const parsed = parsePositionMessage(
+      '新建岗位，项目上海生鲜项目，品牌果蔬好，门店人民广场店，招2名女，今天结，上班时间8:00-14:00，招聘阈值1.5',
+    );
+
+    assert.equal(parsed.references.projectName, '上海生鲜项目');
+    assert.equal(parsed.references.brandName, '果蔬好');
+    assert.deepEqual(parsed.references.storeNames, ['人民广场店']);
+    assert.deepEqual(parsed.patch.genders, ['2']);
+    assert.equal(parsed.patch.payDay, '1');
+    assert.deepEqual(parsed.patch.dailyTimeRange, ['08:00', '14:00']);
+    assert.equal(parsed.patch.recruitStoreAllocations?.[0]?.threshold, 15);
+  });
+
+  it('parses source inheritance wording after an incomplete create draft', () => {
+    const parsed = parsePositionMessage('其他信息要跟1914一致就可以');
+
+    assert.equal(parsed.intent, 'create_preview');
+    assert.equal(parsed.sourceJobBasicInfoId, 1914);
+  });
+
+  it('supports five-digit source job ids in inheritance wording', () => {
+    const parsed = parsePositionMessage('其他信息要跟12345一致就可以');
+
+    assert.equal(parsed.intent, 'create_preview');
+    assert.equal(parsed.sourceJobBasicInfoId, 12345);
   });
 
   it('parses no social insurance as none instead of all insurance options', () => {
@@ -317,6 +450,7 @@ describe('position form and payload', () => {
 
     assert.equal((basicInfo.project as Record<string, unknown>).projectId, 101);
     assert.equal((basicInfo.brand as Record<string, unknown>).brandId, 202);
+    assert.equal(basicInfo.jobName, '测试岗位名称');
     assert.equal(basicInfo.jobNickName, '服务员');
     assert.equal(basicInfo.laborForm, 5);
     assert.ok(Array.isArray(salaryWelfare.jobSalaries));
@@ -398,8 +532,444 @@ describe('position service', () => {
     assert.match(response.reply, /岗位 ID、岗位名称、项目、品牌、城市区域或状态/);
   });
 
-  it('resolves casual Shanghai city search without asking the user to disambiguate all cities', async () => {
+  it('uses the search planner only when rules cannot extract query conditions', async () => {
+    let plannerCalls = 0;
     let capturedParams: unknown;
+    const searchPlanner: PositionSearchPlanner = {
+      async planSearch() {
+        plannerCalls += 1;
+        return {
+          shouldSearchPosition: true,
+          searchJobName: '麦当劳',
+        };
+      },
+    };
+    const apiClient = {
+      getJobList: async (params: unknown) => {
+        capturedParams = params;
+        return {
+          result: [
+            {
+              id: '2001',
+              jobBasicInfoId: 2001,
+              positionName: '麦当劳-服务员-兼职',
+              projectName: '上海麦当劳',
+              brandName: '麦当劳',
+              status: 'published',
+              requirementNum: 2,
+            },
+          ],
+          total: 1,
+        };
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      searchPlanner,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const planned = await service.chat({
+      sessionId: 's-llm-planner',
+      message: '帮我看看麦当劳都有哪些',
+      channel: 'test',
+    });
+
+    assert.equal(planned.intent, 'search');
+    assert.equal(plannerCalls, 1);
+    assert.equal((capturedParams as { searchJobName?: string }).searchJobName, '麦当劳');
+    assert.match(planned.reply, /2001/);
+
+    const ruleFirst = await service.chat({
+      sessionId: 's-llm-planner',
+      message: '果蔬好岗位',
+      channel: 'test',
+    });
+
+    assert.equal(ruleFirst.intent, 'search');
+    assert.equal(plannerCalls, 1);
+    assert.equal((capturedParams as { searchJobName?: string }).searchJobName, '果蔬好');
+  });
+
+  it('lets the search planner replace weak rule-only keywords', async () => {
+    let capturedParams: unknown;
+    const searchPlanner: PositionSearchPlanner = {
+      async planSearch() {
+        return {
+          shouldSearchPosition: true,
+          searchJobName: '麦当劳',
+        };
+      },
+    };
+    const apiClient = {
+      getJobList: async (params: unknown) => {
+        capturedParams = params;
+        return {
+          result: [
+            {
+              id: '2001',
+              jobBasicInfoId: 2001,
+              positionName: '麦当劳-全职服务员',
+              projectName: '上海麦当劳',
+              brandName: '麦当劳',
+              status: 'published',
+              requirementNum: 2,
+            },
+          ],
+          total: 1,
+        };
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      searchPlanner,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-llm-planner-weak-keyword',
+      message: '你帮我看下这个全职岗位',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.equal((capturedParams as { searchJobName?: string }).searchJobName, '麦当劳');
+    assert.match(response.reply, /2001/);
+  });
+
+  it('lets the search planner request detail lookup after planning a vague query', async () => {
+    const calledTools: string[] = [];
+    const searchPlanner: PositionSearchPlanner = {
+      async planSearch() {
+        return {
+          shouldSearchPosition: true,
+          detailRequested: true,
+          searchJobName: '麦当劳',
+        };
+      },
+    };
+    const apiClient = {
+      getJobList: async () => {
+        calledTools.push('getJobList');
+        return {
+          result: [
+            {
+              id: '2001',
+              jobBasicInfoId: 2001,
+              positionName: '麦当劳-服务员-兼职',
+              projectName: '上海麦当劳',
+              brandName: '麦当劳',
+              status: 'published',
+              requirementNum: 2,
+            },
+          ],
+          total: 1,
+        };
+      },
+      getJobDetail: async (jobBasicInfoId: number) => {
+        calledTools.push(`getJobDetail:${jobBasicInfoId}`);
+        return createCompleteDetail(jobBasicInfoId);
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      searchPlanner,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-llm-planner-detail',
+      message: '帮我看看麦当劳那个',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.deepEqual(calledTools, ['getJobList', 'getJobDetail:2001']);
+    assert.match(response.reply, /岗位详情：2001/);
+  });
+
+  it('uses the create planner to understand unseparated natural language create requests', async () => {
+    let plannerCalls = 0;
+    let capturedStoreParams: unknown;
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const createPlanner: PositionCreatePlanner = {
+      async planCreate() {
+        plannerCalls += 1;
+        return {
+          shouldCreatePosition: true,
+          projectName: '上海生鲜项目',
+          brandName: '果蔬好',
+          storeNames: ['人民广场店'],
+          positionName: '理货员',
+          positionCategoryName: '理货员',
+          recruitCount: 2,
+          threshold: 15,
+          genders: ['2'],
+          ageMin: 20,
+          ageMax: 40,
+          dailyTimeRange: ['08:00', '14:00'],
+        };
+      },
+    };
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 101,
+          name: '上海生鲜项目',
+          raw: {
+            brands: [{ brandId: 202, brandName: '果蔬好' }],
+          },
+        },
+      ],
+      searchStores: async (params: unknown) => {
+        capturedStoreParams = params;
+        return [
+          {
+            id: 303,
+            name: '人民广场店',
+            raw: {},
+          },
+        ];
+      },
+      getJobTypes: async () => [{ id: 12, name: '理货员', raw: {} }],
+      getJobTemplateByJobType: async () => ({ jobContent: '负责商品陈列、补货、理货和货架维护。' }),
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      createPlanner,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-llm-create-planner',
+      message: '创建岗位，上海生鲜项目果蔬好人民广场店理货员招2个女生8点到14点，阈值1.5倍',
+      channel: 'test',
+    });
+    const values = draftStore.getBySession('s-llm-create-planner')?.values;
+
+    assert.equal(response.intent, 'create_preview');
+    assert.equal(plannerCalls, 1);
+    assert.deepEqual((capturedStoreParams as { projectIds?: number[] }).projectIds, [101]);
+    assert.deepEqual((capturedStoreParams as { brandIds?: number[] }).brandIds, [202]);
+    assert.equal(values?.projectName, '上海生鲜项目');
+    assert.equal(values?.brandName, '果蔬好');
+    assert.equal(values?.positionName, '理货员');
+    assert.equal(values?.positionCategoryName, '理货员');
+    assert.equal(values?.recruitStoreAllocations?.[0]?.storeId, 303);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.recruitCount, 2);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.threshold, 15);
+    assert.deepEqual(values?.genders, ['2']);
+    assert.equal(values?.ageMin, 20);
+    assert.equal(values?.ageMax, 40);
+    assert.deepEqual(values?.dailyTimeRange, ['08:00', '14:00']);
+  });
+
+  it('lets the create planner override weak rule-extracted names before resolving references', async () => {
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const createPlanner: PositionCreatePlanner = {
+      async planCreate() {
+        return {
+          shouldCreatePosition: true,
+          projectName: '上海生鲜项目',
+          brandName: '果蔬好',
+          storeNames: ['人民广场店'],
+          positionName: '理货员',
+          positionCategoryName: '理货员',
+          recruitCount: 2,
+          threshold: 15,
+        };
+      },
+    };
+    const apiClient = {
+      searchProjects: async (query: string) => {
+        assert.equal(query, '上海生鲜项目');
+        return [
+          {
+            id: 101,
+            name: '上海生鲜项目',
+            raw: {
+              brands: [{ brandId: 202, brandName: '果蔬好' }],
+            },
+          },
+        ];
+      },
+      searchStores: async () => [{ id: 303, name: '人民广场店', raw: {} }],
+      getJobTypes: async () => [{ id: 12, name: '理货员', raw: {} }],
+      getJobTemplateByJobType: async () => ({ jobContent: '负责商品陈列、补货、理货和货架维护。' }),
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      createPlanner,
+      logger: { warn: () => undefined } as never,
+    });
+
+    await service.chat({
+      sessionId: 's-llm-create-override-rule-name',
+      message: '新建上海生鲜项目果蔬好人民广场店理货员，招2人',
+      channel: 'test',
+    });
+    const values = draftStore.getBySession('s-llm-create-override-rule-name')?.values;
+
+    assert.equal(values?.projectName, '上海生鲜项目');
+    assert.equal(values?.brandName, '果蔬好');
+    assert.equal(values?.recruitStoreAllocations?.[0]?.storeName, '人民广场店');
+  });
+
+  it('keeps multiple store names planned by the create planner', async () => {
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const createPlanner: PositionCreatePlanner = {
+      async planCreate() {
+        return {
+          shouldCreatePosition: true,
+          projectName: '上海生鲜项目',
+          brandName: '果蔬好',
+          storeNames: ['人民广场店', '徐家汇店'],
+          positionName: '理货员',
+          positionCategoryName: '理货员',
+          recruitCount: 2,
+          threshold: 15,
+        };
+      },
+    };
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 101,
+          name: '上海生鲜项目',
+          raw: {
+            brands: [{ brandId: 202, brandName: '果蔬好' }],
+          },
+        },
+      ],
+      searchStores: async (params: { searchName?: string }) =>
+        params.searchName === '人民广场店'
+          ? [{ id: 303, name: '人民广场店', raw: {} }]
+          : [{ id: 304, name: '徐家汇店', raw: {} }],
+      getJobTypes: async () => [{ id: 12, name: '理货员', raw: {} }],
+      getJobTemplateByJobType: async () => ({ jobContent: '负责商品陈列、补货、理货和货架维护。' }),
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      createPlanner,
+      logger: { warn: () => undefined } as never,
+    });
+
+    await service.chat({
+      sessionId: 's-llm-create-multi-store',
+      message: '上海生鲜项目果蔬好人民广场店和徐家汇店各招2个理货员',
+      channel: 'test',
+    });
+    const stores = draftStore.getBySession('s-llm-create-multi-store')?.values.recruitStoreAllocations;
+
+    assert.deepEqual(
+      stores?.map(store => ({ name: store.storeName, count: store.recruitCount, threshold: store.threshold })),
+      [
+        { name: '人民广场店', count: 2, threshold: 15 },
+        { name: '徐家汇店', count: 2, threshold: 15 },
+      ],
+    );
+  });
+
+  it('replaces existing draft stores when the user says store changed to another one', async () => {
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const createPlanner: PositionCreatePlanner = {
+      async planCreate(input) {
+        if (/徐家汇店/.test(input.message)) {
+          return {
+            shouldCreatePosition: true,
+            storeNames: ['徐家汇店'],
+          };
+        }
+
+        return {
+          shouldCreatePosition: true,
+          projectName: '上海生鲜项目',
+          brandName: '果蔬好',
+          storeNames: ['人民广场店'],
+          positionName: '理货员',
+          positionCategoryName: '理货员',
+          recruitCount: 2,
+          threshold: 15,
+          genders: ['2'],
+          ageMin: 20,
+          ageMax: 40,
+          dailyTimeRange: ['08:00', '14:00'],
+          baseSalary: 25,
+          baseSalaryUnit: '4',
+          salaryMin: 150,
+          salaryMax: 150,
+          salaryRangeUnit: '1',
+          settlementCycle: '1',
+          payDay: '1',
+          minWorkMonths: 3,
+          dailyWorkDuration: 6,
+        };
+      },
+    };
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 101,
+          name: '上海生鲜项目',
+          raw: {
+            brands: [{ brandId: 202, brandName: '果蔬好' }],
+          },
+        },
+      ],
+      searchStores: async (params: { searchName?: string }) =>
+        params.searchName === '人民广场店'
+          ? [{ id: 303, name: '人民广场店', raw: {} }]
+          : [{ id: 304, name: '徐家汇店', raw: {} }],
+      getJobTypes: async () => [{ id: 12, name: '理货员', raw: {} }],
+      getJobTemplateByJobType: async () => ({ jobContent: '负责商品陈列、补货、理货和货架维护。' }),
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      createPlanner,
+      logger: { warn: () => undefined } as never,
+    });
+
+    await service.chat({
+      sessionId: 's-llm-create-replace-store',
+      message: '帮我建上海生鲜项目果蔬好人民广场店理货员',
+      channel: 'test',
+    });
+    await service.chat({
+      sessionId: 's-llm-create-replace-store',
+      message: '门店换成徐家汇店',
+      channel: 'test',
+    });
+    const stores = draftStore.getBySession('s-llm-create-replace-store')?.values.recruitStoreAllocations;
+
+    assert.deepEqual(
+      stores?.map(store => ({ name: store.storeName, count: store.recruitCount, threshold: store.threshold })),
+      [{ name: '徐家汇店', count: 2, threshold: 15 }],
+    );
+  });
+
+  it('resolves casual Shanghai city search without asking the user to disambiguate all cities', async () => {
+    const capturedParams: unknown[] = [];
     const apiClient = {
       getProvinceList: async () => [
         {
@@ -426,7 +996,7 @@ describe('position service', () => {
         },
       ],
       getJobList: async (params: unknown) => {
-        capturedParams = params;
+        capturedParams.push(params);
         return { result: [], total: 0 };
       },
       searchBrands: async () => [],
@@ -448,11 +1018,11 @@ describe('position service', () => {
     assert.equal(response.intent, 'search');
     assert.equal(response.needsClarification, false);
     assert.deepEqual(
-      (capturedParams as { cityIdList?: number[] }).cityIdList,
+      (capturedParams[0] as { cityIdList?: number[] }).cityIdList,
       [310100],
     );
     assert.equal(
-      (capturedParams as { searchJobName?: string }).searchJobName,
+      (capturedParams[0] as { searchJobName?: string }).searchJobName,
       '果蔬好',
     );
     assert.doesNotMatch(response.reply, /匹配到多个城市/);
@@ -510,6 +1080,7 @@ describe('position service', () => {
       searchBrands: async () => {
         throw new TypeError('fetch failed');
       },
+      getJobList: async () => ({ result: [], total: 0 }),
     } as unknown as PositionApiClient;
 
     const service = new PositionService({
@@ -529,6 +1100,479 @@ describe('position service', () => {
     assert.equal(response.needsClarification, true);
     assert.match(response.reply, /岗位接口请求失败/);
     assert.match(response.reply, /fetch failed/);
+  });
+
+  it('does not globally resolve a brand when the selected project has different brands', async () => {
+    let brandSearchCalls = 0;
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 101,
+          name: '上海肯德基项目',
+          raw: {
+            brands: [{ brandId: 202, brandName: '肯德基' }],
+          },
+        },
+      ],
+      searchBrands: async () => {
+        brandSearchCalls += 1;
+        return [{ id: 303, name: '麦当劳', raw: {} }];
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-create-brand-project-scope',
+      message: '新建岗位，项目 上海肯德基项目，品牌 麦当劳',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'clarify');
+    assert.equal(brandSearchCalls, 0);
+    assert.match(response.reply, /当前项目下没有“麦当劳”这个品牌/);
+  });
+
+  it('requires project and brand before resolving a create store', async () => {
+    let storeSearchCalls = 0;
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const apiClient = {
+      searchStores: async () => {
+        storeSearchCalls += 1;
+        return [];
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-create-store-missing-scope',
+      message: '新建岗位，门店 人民广场店，招聘3人，阈值1.5倍',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'create_preview');
+    assert.equal(storeSearchCalls, 0);
+    assert.ok(response.missingFields?.some(item => item.label === '项目'));
+    assert.ok(response.missingFields?.some(item => item.label === '品牌'));
+    assert.equal(draftStore.getBySession('s-create-store-missing-scope')?.values.recruitStoreAllocations?.[0]?.storeName, '人民广场店');
+  });
+
+  it('resolves create stores within the selected project and brand and preserves count fields', async () => {
+    let capturedStoreParams: unknown;
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 101,
+          name: '上海项目',
+          raw: {
+            brands: [{ brandId: 202, brandName: '肯德基' }],
+          },
+        },
+      ],
+      searchStores: async (params: unknown) => {
+        capturedStoreParams = params;
+        return [
+          {
+            id: 303,
+            name: '人民广场店',
+            raw: {
+              address: '上海市黄浦区',
+              exactAddress: '南京东路1号',
+            },
+          },
+        ];
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-create-store-scope',
+      message: '新建岗位，项目 上海项目，品牌 肯德基，门店 人民广场店，招聘3人，阈值1.5倍',
+      channel: 'test',
+    });
+    const values = draftStore.getBySession('s-create-store-scope')?.values;
+
+    assert.equal(response.intent, 'create_preview');
+    assert.deepEqual((capturedStoreParams as { projectIds?: number[] }).projectIds, [101]);
+    assert.deepEqual((capturedStoreParams as { brandIds?: number[] }).brandIds, [202]);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.storeId, 303);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.storeName, '人民广场店');
+    assert.equal(values?.recruitStoreAllocations?.[0]?.recruitCount, 3);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.threshold, 15);
+    assert.equal(values?.workAddress, '上海市黄浦区南京东路1号');
+  });
+
+  it('resolves HM style composite create names through project scoped brand and store lookup', async () => {
+    let capturedStoreParams: unknown;
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 101,
+          name: '上海项目',
+          raw: {
+            brands: [{ brandId: 202, brandName: '果蔬好' }],
+          },
+        },
+      ],
+      searchStores: async (params: unknown) => {
+        capturedStoreParams = params;
+        return [
+          {
+            id: 303,
+            name: '人民广场店',
+            raw: {
+              address: '上海市黄浦区',
+              exactAddress: '南京东路1号',
+            },
+          },
+        ];
+      },
+      getJobTypes: async () => [{ id: 12, name: '理货员', raw: {} }],
+      getJobTemplateByJobType: async () => ({ jobContent: '负责果蔬陈列、理货和排面维护' }),
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-create-composite-name',
+      message:
+        '新建岗位，项目 上海项目，果蔬好-人民广场店-理货员，招2名女性年龄在20到40岁，上班时间为8点到14点，阈值1.5倍',
+      channel: 'test',
+    });
+    const values = draftStore.getBySession('s-create-composite-name')?.values;
+
+    assert.equal(response.intent, 'create_preview');
+    assert.deepEqual((capturedStoreParams as { projectIds?: number[] }).projectIds, [101]);
+    assert.deepEqual((capturedStoreParams as { brandIds?: number[] }).brandIds, [202]);
+    assert.equal(values?.projectId, 101);
+    assert.equal(values?.brandId, 202);
+    assert.equal(values?.brandName, '果蔬好');
+    assert.equal(values?.positionName, '理货员');
+    assert.equal(values?.positionCategory, 12);
+    assert.equal(values?.positionCategoryName, '理货员');
+    assert.equal(values?.workContent, '负责果蔬陈列、理货和排面维护');
+    assert.equal(values?.recruitStoreAllocations?.[0]?.storeId, 303);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.storeName, '人民广场店');
+    assert.equal(values?.recruitStoreAllocations?.[0]?.recruitCount, 2);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.threshold, 15);
+    assert.deepEqual(values?.genders, ['2']);
+    assert.equal(values?.ageMin, 20);
+    assert.equal(values?.ageMax, 40);
+    assert.deepEqual(values?.dailyTimeRange, ['08:00', '14:00']);
+  });
+
+  it('keeps unresolved create store names and resolves them after the user provides a project', async () => {
+    let capturedStoreParams: unknown;
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 101,
+          name: '上海项目',
+          raw: {
+            brands: [{ brandId: 202, brandName: '果蔬好' }],
+          },
+        },
+      ],
+      searchBrands: async () => [{ id: 202, name: '果蔬好', raw: {} }],
+      searchStores: async (params: unknown) => {
+        capturedStoreParams = params;
+        return [
+          {
+            id: 303,
+            name: '人民广场店',
+            raw: {
+              address: '上海市黄浦区',
+              exactAddress: '南京东路1号',
+            },
+          },
+        ];
+      },
+      getJobTypes: async () => [{ id: 12, name: '理货员', raw: {} }],
+      getJobTemplateByJobType: async () => ({ jobContent: '负责果蔬陈列、理货和排面维护' }),
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      logger: { warn: () => undefined } as never,
+    });
+
+    await service.chat({
+      sessionId: 's-create-store-later-project',
+      message: '创建一个岗位，果蔬好-人民广场店-理货员，招2名女性年龄在20到40岁，上班时间为8点到14点，阈值1.5倍',
+      channel: 'test',
+    });
+    const firstValues = draftStore.getBySession('s-create-store-later-project')?.values;
+
+    assert.equal(firstValues?.brandName, '果蔬好');
+    assert.equal(firstValues?.positionName, '理货员');
+    assert.equal(firstValues?.recruitStoreAllocations?.[0]?.storeName, '人民广场店');
+    assert.equal(firstValues?.recruitStoreAllocations?.[0]?.storeId, undefined);
+
+    await service.chat({
+      sessionId: 's-create-store-later-project',
+      message: '项目 上海项目',
+      channel: 'test',
+    });
+    const values = draftStore.getBySession('s-create-store-later-project')?.values;
+
+    assert.deepEqual((capturedStoreParams as { projectIds?: number[] }).projectIds, [101]);
+    assert.deepEqual((capturedStoreParams as { brandIds?: number[] }).brandIds, [202]);
+    assert.equal(values?.projectId, 101);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.storeId, 303);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.storeName, '人民广场店');
+    assert.equal(values?.recruitStoreAllocations?.[0]?.recruitCount, 2);
+    assert.equal(values?.recruitStoreAllocations?.[0]?.threshold, 15);
+  });
+
+  it('clears stale brand and store fields when a create draft project changes', async () => {
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    draftStore.set({
+      draftId: 'draft-project-change',
+      sessionId: 's-create-project-change',
+      mode: 'create',
+      action: 'save',
+      values: createCompleteValues(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      missingFields: [],
+      validationErrors: [],
+      diff: [],
+    });
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 404,
+          name: '北京项目',
+          raw: {
+            brands: [{ brandId: 505, brandName: '汉堡王' }],
+          },
+        },
+      ],
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      logger: { warn: () => undefined } as never,
+    });
+
+    await service.chat({
+      sessionId: 's-create-project-change',
+      message: '项目 北京项目',
+      channel: 'test',
+    });
+    const values = draftStore.getBySession('s-create-project-change')?.values;
+
+    assert.equal(values?.projectId, 404);
+    assert.equal(values?.brandId, undefined);
+    assert.equal(values?.brandName, undefined);
+    assert.equal(values?.recruitStoreAllocations, undefined);
+    assert.equal(values?.workAddress, undefined);
+  });
+
+  it('uses job type defaults for create nickname and work content when missing', async () => {
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const apiClient = {
+      searchProjects: async () => [
+        {
+          id: 101,
+          name: '上海项目',
+          raw: {
+            brands: [{ brandId: 202, brandName: '肯德基' }],
+          },
+        },
+      ],
+      searchStores: async () => [
+        {
+          id: 303,
+          name: '人民广场店',
+          raw: {},
+        },
+      ],
+      getJobTypes: async () => [{ id: 12, name: '服务员', raw: {} }],
+      getJobTemplateByJobType: async (jobTypeId: number) => {
+        assert.equal(jobTypeId, 12);
+        return { jobContent: '负责门店服务和基础清洁' };
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      logger: { warn: () => undefined } as never,
+    });
+
+    await service.chat({
+      sessionId: 's-create-job-type-defaults',
+      message: '新建岗位，项目 上海项目，品牌 肯德基，门店 人民广场店，工种 服务员，招聘3人，阈值1.5倍',
+      channel: 'test',
+    });
+    const values = draftStore.getBySession('s-create-job-type-defaults')?.values;
+
+    assert.equal(values?.positionCategory, 12);
+    assert.equal(values?.positionName, '服务员');
+    assert.equal(values?.workContent, '负责门店服务和基础清洁');
+  });
+
+  it('uses job-name search as a planned alternative when explicit brand resolution fails but list search can hit', async () => {
+    const capturedParams: unknown[] = [];
+    const apiClient = {
+      searchBrands: async () => {
+        throw new TypeError('fetch failed');
+      },
+      getJobList: async (params: unknown) => {
+        capturedParams.push(params);
+        return (params as { searchJobName?: string }).searchJobName === '果蔬好'
+          ? {
+              result: [
+                {
+                  id: '1909',
+                  jobBasicInfoId: 1909,
+                  positionName: '果蔬好-人民广场店-兼职',
+                  projectName: '京津果蔬好',
+                  brandName: '果蔬好',
+                  status: 'published',
+                  requirementNum: 1,
+                },
+              ],
+              total: 1,
+            }
+          : { result: [], total: 0 };
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-brand-api-fallback-hit',
+      message: '你帮我查下果蔬好品牌的所有岗位',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.equal(response.needsClarification, false);
+    assert.equal(response.results?.[0]?.jobBasicInfoId, 1909);
+    assert.deepEqual(response.usedTools, ['position.searchBrands', 'position.getJobList']);
+    assert.equal((capturedParams[0] as { searchJobName?: string }).searchJobName, '果蔬好');
+    assert.doesNotMatch(response.reply, /岗位接口请求失败/);
+  });
+
+  it('stops after the primary job-name candidate hits for ambiguous related-position wording', async () => {
+    let brandSearchCalls = 0;
+    let projectSearchCalls = 0;
+    const apiClient = {
+      getJobList: async (params: unknown) => {
+        assert.equal((params as { searchJobName?: string }).searchJobName, '肯德基');
+        return {
+          result: [
+            {
+              id: '1914',
+              jobBasicInfoId: 1914,
+              positionName: '肯德基-服务员-兼职',
+              projectName: '上海肯德基',
+              brandName: '肯德基',
+              status: 'published',
+              requirementNum: 1,
+            },
+          ],
+          total: 1,
+        };
+      },
+      searchBrands: async () => {
+        brandSearchCalls += 1;
+        return [];
+      },
+      searchProjects: async () => {
+        projectSearchCalls += 1;
+        return [];
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-primary-hit-stops',
+      message: '你帮我查下肯德基相关的岗位',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.equal(response.results?.[0]?.jobBasicInfoId, 1914);
+    assert.equal(brandSearchCalls, 0);
+    assert.equal(projectSearchCalls, 0);
+  });
+
+  it('returns no matches only after exhausting planned job-name, brand, and project candidates', async () => {
+    const capturedParams: unknown[] = [];
+    const apiClient = {
+      getJobList: async (params: unknown) => {
+        capturedParams.push(params);
+        return { result: [], total: 0 };
+      },
+      searchBrands: async () => [{ id: 10024, name: '果蔬好', raw: {} }],
+      searchProjects: async () => [{ id: 598, name: '京津果蔬好', raw: {} }],
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-no-result-after-plan',
+      message: '你查下果蔬好岗位',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.equal(response.needsClarification, false);
+    assert.equal(response.results?.length, 0);
+    assert.equal(capturedParams.length, 3);
+    assert.equal((capturedParams[0] as { searchJobName?: string }).searchJobName, '果蔬好');
+    assert.deepEqual((capturedParams[1] as { brandIds?: number[] }).brandIds, [10024]);
+    assert.deepEqual((capturedParams[2] as { projectIds?: number[] }).projectIds, [598]);
+    assert.match(response.reply, /已尝试：岗位名称包含“果蔬好”、品牌“果蔬好”、项目“果蔬好”/);
   });
 
   it('uses project id when the user explicitly asks for positions under a project', async () => {
@@ -645,8 +1689,8 @@ describe('position service', () => {
     assert.deepEqual((capturedParams[1] as { cityIdList?: number[] }).cityIdList, [310100]);
     assert.equal((capturedParams[1] as { searchJobName?: string }).searchJobName, undefined);
     assert.deepEqual(response.usedTools, [
-      'position.getJobList',
       'position.getProvinceList',
+      'position.getJobList',
       'position.searchBrands',
       'position.getJobList',
     ]);
@@ -788,6 +1832,217 @@ describe('position service', () => {
     assert.deepEqual((capturedParams as { statuses?: number[] }).statuses, [1]);
   });
 
+  it('searches by full position name before loading details when the name contains digits', async () => {
+    const calledTools: string[] = [];
+    let capturedParams: unknown;
+    const apiClient = {
+      getProvinceList: async () => [
+        {
+          id: 310000,
+          name: '上海市',
+          children: [
+            {
+              id: 310100,
+              name: '上海市',
+              children: [{ id: 310104, name: '徐汇区' }],
+            },
+          ],
+        },
+      ],
+      getJobList: async (params: unknown) => {
+        calledTools.push('getJobList');
+        capturedParams = params;
+        return {
+          result: [
+            {
+              id: '1915',
+              jobBasicInfoId: 1915,
+              positionName: 'test050900-上海徐汇绿地店-迎宾-小时工',
+              projectName: 'P051901',
+              brandName: 'test051901',
+              status: 'published',
+              salaryText: '22元/时',
+              requirementNum: 3,
+            },
+          ],
+          total: 1,
+        };
+      },
+      getJobDetail: async (jobBasicInfoId: number) => {
+        calledTools.push(`getJobDetail:${jobBasicInfoId}`);
+        return createCompleteDetail(jobBasicInfoId);
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-detail-by-name',
+      message: 'test050900-上海徐汇绿地店-迎宾-小时工这个岗位看下详情',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.equal(response.needsClarification, false);
+    assert.equal((capturedParams as { searchJobName?: string }).searchJobName, 'test050900-上海徐汇绿地店-迎宾-小时工');
+    assert.equal((capturedParams as { jobBasicInfoIds?: number[] }).jobBasicInfoIds, undefined);
+    assert.deepEqual(calledTools, ['getJobList', 'getJobDetail:1915']);
+    assert.match(response.reply, /岗位详情：1915/);
+    assert.deepEqual(response.usedTools, ['position.getProvinceList', 'position.getJobList', 'position.getJobDetail']);
+  });
+
+  it('does not route edit-like position names to edit preview', async () => {
+    const calledTools: string[] = [];
+    let capturedParams: unknown;
+    const apiClient = {
+      getJobList: async (params: unknown) => {
+        calledTools.push('getJobList');
+        capturedParams = params;
+        return {
+          result: [
+            {
+              id: '2019',
+              jobBasicInfoId: 2019,
+              positionName: 'test051901-五店-修改等待通知测试2-全职',
+              projectName: 'P051901',
+              brandName: 'test051901',
+              status: 'published',
+              salaryText: '5000元/月',
+              requirementNum: 1,
+            },
+          ],
+          total: 1,
+        };
+      },
+      getJobDetail: async (jobBasicInfoId: number) => {
+        calledTools.push(`getJobDetail:${jobBasicInfoId}`);
+        return createCompleteDetail(jobBasicInfoId);
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-edit-like-name-detail',
+      message: 'test051901-五店-修改等待通知测试2-全职 看下这个岗位信息',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.equal(response.needsClarification, false);
+    assert.equal((capturedParams as { searchJobName?: string }).searchJobName, 'test051901-五店-修改等待通知测试2-全职');
+    assert.deepEqual(calledTools, ['getJobList', 'getJobDetail:2019']);
+    assert.match(response.reply, /岗位详情：2019/);
+    assert.doesNotMatch(response.reply, /请提供要编辑的岗位 ID/);
+  });
+
+  it('loads details for trailing position names after this-position wording', async () => {
+    const calledTools: string[] = [];
+    let capturedParams: unknown;
+    const apiClient = {
+      getJobList: async (params: unknown) => {
+        calledTools.push('getJobList');
+        capturedParams = params;
+        return {
+          result: [
+            {
+              id: '2019',
+              jobBasicInfoId: 2019,
+              positionName: 'test051901-五店-修改等待通知测试2-全职',
+              projectName: 'P051901',
+              brandName: 'test051901',
+              status: 'published',
+              salaryText: '5000元/月',
+              requirementNum: 1,
+            },
+          ],
+          total: 1,
+        };
+      },
+      getJobDetail: async (jobBasicInfoId: number) => {
+        calledTools.push(`getJobDetail:${jobBasicInfoId}`);
+        return createCompleteDetail(jobBasicInfoId);
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-trailing-name-detail',
+      message: '你帮我看下这个岗位的信息 test051901-五店-修改等待通知测试2-全职',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.equal(response.needsClarification, false);
+    assert.equal((capturedParams as { searchJobName?: string }).searchJobName, 'test051901-五店-修改等待通知测试2-全职');
+    assert.deepEqual(calledTools, ['getJobList', 'getJobDetail:2019']);
+    assert.match(response.reply, /岗位详情：2019/);
+    assert.doesNotMatch(response.reply, /请提供至少一个岗位查询条件/);
+  });
+
+  it('asks the user to pick a job id when a detail-by-name search matches multiple positions', async () => {
+    const apiClient = {
+      getJobList: async () => ({
+        result: [
+          {
+            id: '1909',
+            jobBasicInfoId: 1909,
+            positionName: '肯德基-门店A-服务员-兼职',
+            projectName: '上海肯德基',
+            brandName: '肯德基',
+            status: 'published',
+            requirementNum: 1,
+          },
+          {
+            id: '1910',
+            jobBasicInfoId: 1910,
+            positionName: '肯德基-门店B-服务员-兼职',
+            projectName: '上海肯德基',
+            brandName: '肯德基',
+            status: 'published',
+            requirementNum: 1,
+          },
+        ],
+        total: 2,
+      }),
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-detail-by-name-multiple',
+      message: '肯德基服务员岗位看下详情',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'search');
+    assert.equal(response.needsClarification, true);
+    assert.match(response.reply, /匹配到多条岗位，请指定岗位 ID 查看详情/);
+    assert.match(response.reply, /1909/);
+    assert.match(response.reply, /1910/);
+  });
+
   it('uses the latest single position search result when user asks for details', async () => {
     const calledTools: string[] = [];
     const apiClient = {
@@ -927,6 +2182,49 @@ describe('position service', () => {
     assert.match(editResponse.reply, /变更说明：/);
     assert.match(editResponse.reply, /基本薪资由3000调整为25/);
     assert.doesNotMatch(editResponse.reply, /\| 字段 \| 值 \|/);
+  });
+
+  it('loads detail by explicit id without invoking the search planner or list search', async () => {
+    const calledTools: string[] = [];
+    let plannerCalled = false;
+    const searchPlanner: PositionSearchPlanner = {
+      async planSearch() {
+        plannerCalled = true;
+        return {
+          shouldSearchPosition: true,
+          searchJobName: '不应该使用',
+        };
+      },
+    };
+    const apiClient = {
+      getJobList: async () => {
+        throw new Error('getJobList should not be called');
+      },
+      getJobDetail: async (jobBasicInfoId: number) => {
+        calledTools.push(`getJobDetail:${jobBasicInfoId}`);
+        return createCompleteDetail(jobBasicInfoId);
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      searchPlanner,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const response = await service.chat({
+      sessionId: 's-direct-detail-id',
+      message: '看下1914的详情',
+      channel: 'test',
+    });
+
+    assert.equal(plannerCalled, false);
+    assert.deepEqual(calledTools, ['getJobDetail:1914']);
+    assert.equal(response.intent, 'search');
+    assert.deepEqual(response.usedTools, ['position.getJobDetail']);
+    assert.match(response.reply, /岗位详情：1914/);
   });
 
   it('renders position details semantically instead of exposing raw internal codes', async () => {
@@ -1092,9 +2390,138 @@ describe('position service', () => {
     assert.match(preview.reply, /招聘门店：人民广场店；招聘 5 人/);
   });
 
+  it('applies a source position to an incomplete create draft while preserving user fields', async () => {
+    const calledIds: number[] = [];
+    const apiClient = {
+      getJobDetail: async (jobBasicInfoId: number) => {
+        calledIds.push(jobBasicInfoId);
+        return createCompleteDetail(jobBasicInfoId);
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    const first = await service.chat({
+      sessionId: 's-apply-source-to-draft',
+      message: '我现在要新建一个岗位，我现在要招两名女性，年龄在20-40之间',
+      channel: 'test',
+    });
+
+    assert.equal(first.intent, 'create_preview');
+    assert.equal(first.needsClarification, true);
+
+    const preview = await service.chat({
+      sessionId: 's-apply-source-to-draft',
+      message: '其他信息要跟1914一致就可以',
+      channel: 'test',
+    });
+
+    assert.equal(preview.intent, 'create_preview');
+    assert.equal(preview.needsConfirmation, true);
+    assert.deepEqual(calledIds, [1914]);
+    assert.match(preview.reply, /招聘门店：人民广场店；招聘 2 人/);
+    assert.match(preview.reply, /年龄：20-40岁/);
+    assert.match(preview.reply, /性别：女性/);
+    assert.match(preview.reply, /变更说明：/);
+  });
+
+  it('does not suggest a focused position as a template when create entities are missing', async () => {
+    const apiClient = {
+      getJobDetail: async (jobBasicInfoId: number) => createCompleteDetail(jobBasicInfoId),
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore: new PositionDraftStore(30 * 60 * 1000),
+      logger: { warn: () => undefined } as never,
+    });
+
+    await service.chat({
+      sessionId: 's-suggest-context-source',
+      message: '查看岗位 ID 1909 的详细信息',
+      channel: 'test',
+    });
+
+    const response = await service.chat({
+      sessionId: 's-suggest-context-source',
+      message: '我现在要新建一个岗位，我现在要招两名女性，年龄在20-40之间',
+      channel: 'test',
+    });
+
+    assert.equal(response.intent, 'create_preview');
+    assert.equal(response.needsClarification, true);
+    assert.match(response.reply, /当前不能保存的问题/);
+    assert.match(response.reply, /请补充项目/);
+    assert.match(response.reply, /请补充品牌/);
+    assert.match(response.reply, /请补充当前项目、品牌下已存在的招聘门店/);
+    assert.doesNotMatch(response.reply, /刚查看过岗位 ID 1909/);
+  });
+
+  it('does not auto-inherit from a similar position when create entities are missing', async () => {
+    const calledTools: string[] = [];
+    const draftStore = new PositionDraftStore(30 * 60 * 1000);
+    const apiClient = {
+      getJobList: async (params: { searchJobName?: string }) => {
+        calledTools.push(`getJobList:${params.searchJobName}`);
+        return {
+          result: [
+            {
+              id: '1909',
+              jobBasicInfoId: 1909,
+              positionName: '果蔬好-人民广场店-理货员-兼职',
+              projectName: '京津果蔬好',
+              brandName: '果蔬好',
+              status: 'published',
+              requirementNum: 1,
+            },
+          ],
+          total: 1,
+        };
+      },
+      getJobDetail: async (jobBasicInfoId: number) => {
+        calledTools.push(`getJobDetail:${jobBasicInfoId}`);
+        return createCompleteDetail(jobBasicInfoId);
+      },
+    } as unknown as PositionApiClient;
+
+    const service = new PositionService({
+      config: baseConfig,
+      positionApiClient: apiClient,
+      draftStore,
+      logger: { warn: () => undefined } as never,
+    });
+
+    const preview = await service.chat({
+      sessionId: 's-auto-source-by-name',
+      message: '新建一个果蔬好理货员岗位，招聘2人',
+      channel: 'test',
+    });
+
+    assert.equal(preview.intent, 'create_preview');
+    assert.equal(preview.needsConfirmation, false);
+    assert.deepEqual(calledTools, []);
+    assert.equal(draftStore.getBySession('s-auto-source-by-name')?.values.positionName, '果蔬好理货员');
+    assert.match(preview.reply, /请补充项目/);
+    assert.match(preview.reply, /请补充品牌/);
+    assert.match(preview.reply, /请补充当前项目、品牌下已存在的招聘门店/);
+  });
+
   it('requires supplier notification choice before publishing and then commits', async () => {
     const createdPayloads: Record<string, unknown>[] = [];
     const apiClient = {
+      searchStores: async () => [
+        {
+          id: 1,
+          name: '人民广场店',
+          raw: {},
+        },
+      ],
       createJob: async (payload: Record<string, unknown>) => {
         createdPayloads.push(payload);
         return true;
@@ -1342,7 +2769,15 @@ describe('position service', () => {
   it('asks what to modify when user requests another edit without fields on a pending preview', async () => {
     const service = new PositionService({
       config: baseConfig,
-      positionApiClient: {} as PositionApiClient,
+      positionApiClient: {
+        searchStores: async () => [
+          {
+            id: 1,
+            name: '人民广场店',
+            raw: {},
+          },
+        ],
+      } as unknown as PositionApiClient,
       draftStore: new PositionDraftStore(30 * 60 * 1000),
       logger: { warn: () => undefined } as never,
     });

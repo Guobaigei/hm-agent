@@ -22,7 +22,9 @@ export function buildCreateJobPayload(values: PositionFormValues, options: Paylo
   return pruneEmpty({
     immediate: options.publishNow ? 1 : 0,
     sendMsgToSupplier: options.publishNow ? Boolean(options.sendMsgToSupplier) : false,
-    jobRequirement: buildJobRequirementPayload(values),
+    jobRequirement: buildJobRequirementPayload(values, {
+      includeGeneratedJobName: true,
+    }),
   }) as Record<string, unknown>;
 }
 
@@ -38,10 +40,13 @@ export function buildUpdateJobPayload(values: PositionFormValues, options: Paylo
 
 export function buildJobRequirementPayload(
   rawValues: PositionFormValues,
-  options: { jobBasicInfoId?: number | null } = {},
+  options: {
+    jobBasicInfoId?: number | null;
+    includeGeneratedJobName?: boolean;
+  } = {},
 ) {
   const values = cleanPositionFormValues(rawValues);
-  const basicInfo = mapBasicInfo(values, options.jobBasicInfoId);
+  const basicInfo = mapBasicInfo(values, options);
   const salaryWelfare = mapSalaryWelfare(values);
   const hiringRequirement = mapHiringRequirement(values);
   const workTimeArrangement = mapWorkTimeArrangement(values);
@@ -62,16 +67,24 @@ export function buildJobRequirementPayload(
   }) as Record<string, unknown>;
 }
 
-function mapBasicInfo(values: PositionFormValues, jobBasicInfoId?: number | null) {
+function mapBasicInfo(
+  values: PositionFormValues,
+  options: {
+    jobBasicInfoId?: number | null;
+    includeGeneratedJobName?: boolean;
+  },
+) {
   return pruneEmpty({
-    id: normalizeNumber(jobBasicInfoId),
+    id: normalizeNumber(options.jobBasicInfoId),
     project: {
       projectId: normalizeNumber(values.projectId),
     },
     brand: {
       brandId: normalizeNumber(values.brandId),
     },
-    jobName: values.jobName || values.positionName,
+    jobName: options.includeGeneratedJobName
+      ? '测试岗位名称'
+      : values.jobName || values.positionName,
     jobNickName: values.positionName,
     jobType: normalizeNumber(values.positionCategory),
     jobContent: values.workContent,

@@ -5,6 +5,10 @@ import { HmQueryService } from '../hm-query/service.ts';
 import { InMemorySessionStore } from '../hm-query/sessionStore.ts';
 import { PositionApiClient } from '../position/client.ts';
 import { PositionDraftStore } from '../position/draftStore.ts';
+import {
+  createLlmPositionCreatePlanner,
+  createLlmPositionSearchPlanner,
+} from '../position/planner.ts';
 import { PositionService } from '../position/service.ts';
 import type { AppConfig } from './config.ts';
 import { createLanguageModels } from './modelProvider.ts';
@@ -44,17 +48,27 @@ export function createAgentRuntime(
     logger,
   });
 
+  const models = createLanguageModels(config);
   const hmQueryService = new HmQueryService({
     config,
-    models: createLanguageModels(config),
+    models,
     hmApiClient,
     sessionStore,
     logger,
   });
+  const positionPlannerModels = models.filter(model => model.provider !== 'bailian' || Boolean(config.aiApiKey));
   const positionService = new PositionService({
     config,
     positionApiClient,
     draftStore: positionDraftStore,
+    searchPlanner:
+      config.aiApiKey || config.deepseekApiKey
+        ? createLlmPositionSearchPlanner(positionPlannerModels, logger)
+        : undefined,
+    createPlanner:
+      config.aiApiKey || config.deepseekApiKey
+        ? createLlmPositionCreatePlanner(positionPlannerModels, logger)
+        : undefined,
     logger,
   });
 
