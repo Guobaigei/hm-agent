@@ -8,7 +8,7 @@ import { createAgentRuntime } from '../pages/core/runtime.ts';
 
 async function main() {
   const config = getConfig();
-  const runtime = createAgentRuntime(config);
+  const runtime = createAgentRuntime(config, { silentLogger: true });
   const sessionId = process.argv[2]?.trim() || `cli-${Date.now()}`;
   const userId = 'cli-user';
 
@@ -103,6 +103,10 @@ function shouldUsePositionService(
   hasPendingPositionDraft: boolean,
   hasPositionContext: boolean,
 ): boolean {
+  if (hasDraftReference(message)) {
+    return true;
+  }
+
   if (hasPendingPositionDraft) {
     return true;
   }
@@ -116,6 +120,10 @@ function shouldUsePositionService(
   }
 
   return /岗位|职位|工种|招聘人数|招聘门店|用工形式|用工类型|兼职类型|合作模式|工作内容|工作地址|试工|培训|试用期|面试|发薪|薪资|工资|社保|公积金|商业保险|年龄|性别|学历|排班|上下班|供应商/.test(message);
+}
+
+function hasDraftReference(message: string): boolean {
+  return /draftId\s*[:：#]?\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(message);
 }
 
 function buildCapabilityReply(): string {

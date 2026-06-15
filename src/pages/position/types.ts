@@ -307,7 +307,7 @@ export type PositionFormValues = PositionBenefitConfig & {
   trialAddressMode?: '1' | '2';
   trialAddress?: string;
   trialDuration?: number;
-  trialUnit?: 'day' | 'hour';
+  trialUnit?: '1' | '2' | 'day' | 'hour';
   trialAssessment?: '1' | '2' | '3' | '4';
   trialAssessmentRemark?: string;
   trainingAddressMode?: '1' | '2';

@@ -1,4 +1,4 @@
-import { generateText } from 'ai';
+import { generateText, Output } from 'ai';
 import type { Logger } from 'pino';
 import { z } from 'zod';
 
@@ -150,6 +150,9 @@ const llmCreatePlanSchema = z.object({
 type LlmSearchPlan = z.infer<typeof llmSearchPlanSchema>;
 type LlmCreatePlan = z.infer<typeof llmCreatePlanSchema>;
 
+const PLANNER_TIMEOUT_MS = 4000;
+const PLANNER_MAX_OUTPUT_TOKENS = 700;
+
 export function createLlmPositionSearchPlanner(
   models: NamedLanguageModel[],
   logger: Logger,
@@ -166,14 +169,17 @@ export function createLlmPositionSearchPlanner(
         try {
           const result = await generateText({
             model: modelCandidate.model,
+            output: Output.object({
+              schema: llmSearchPlanSchema,
+              name: 'position_search_plan',
+            }),
             prompt: buildSearchPlanningPrompt(input.message, input.parsed),
+            temperature: 0,
+            maxOutputTokens: PLANNER_MAX_OUTPUT_TOKENS,
+            maxRetries: 0,
+            timeout: { totalMs: PLANNER_TIMEOUT_MS },
           });
-          const plan = parseLlmSearchPlan(result.text);
-          if (!plan) {
-            throw new Error('No valid JSON plan generated.');
-          }
-
-          return normalizeLlmSearchPlan(plan);
+          return normalizeLlmSearchPlan(result.output);
         } catch (error) {
           lastError = error;
           logger.warn(
@@ -218,14 +224,17 @@ export function createLlmPositionCreatePlanner(
         try {
           const result = await generateText({
             model: modelCandidate.model,
+            output: Output.object({
+              schema: llmCreatePlanSchema,
+              name: 'position_create_plan',
+            }),
             prompt: buildCreatePlanningPrompt(input.message, input.parsed),
+            temperature: 0,
+            maxOutputTokens: PLANNER_MAX_OUTPUT_TOKENS,
+            maxRetries: 0,
+            timeout: { totalMs: PLANNER_TIMEOUT_MS },
           });
-          const plan = parseLlmCreatePlan(result.text);
-          if (!plan) {
-            throw new Error('No valid JSON create plan generated.');
-          }
-
-          return normalizeLlmCreatePlan(plan);
+          return normalizeLlmCreatePlan(result.output);
         } catch (error) {
           lastError = error;
           logger.warn(
@@ -299,6 +308,7 @@ function buildCreatePlanningPrompt(
     '9. 性别：男=1，女=2，男女不限=[1,2]。',
     '10. 基本薪资单位：天/日=1，月=3，小时/时=4，单=5，次=6。综合薪资单位：天/日=1，周=2，月=3。',
     '11. 结算周期：日结=1，周结=2，月结=3，完工结=4。发薪日：当日结/今天结=1，次日结=2，月结填日期数字字符串。',
+    '12. 如果用户是“复制/照着/参考某个岗位新建”，来源岗位 ID 已由规则解析保留；你只抽取用户本句明确要覆盖的字段，不要把来源岗位已有字段当作用户输入。',
     '',
     '当前规则解析结果如下，仅用于参考；如果规则漏掉自然语言信息，你可以补充；如果规则已有明确 ID，不要覆盖：',
     JSON.stringify(parsed),
@@ -414,6 +424,8 @@ function normalizeLlmCreatePlan(plan: LlmCreatePlan): PositionCreatePlanningResu
 function cleanPlannerText(value?: string): string | undefined {
   const text = value
     ?.replace(/岗位|职位|相关|所有|全部|都有哪些|有哪些|有哪?些|哪些/g, '')
+    .replace(/^(?:名称|名字|名)(?:是|为|叫|改为|改成|调整为|换成|换为|设为|设置为|命名为)?/u, '')
+    .replace(/(?:的|下的|里的)$/u, '')
     .replace(/[，,。；;]$/u, '')
     .trim();
   return text || undefined;

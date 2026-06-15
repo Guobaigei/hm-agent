@@ -47,7 +47,6 @@ const DICTIONARY_OPTIONS: Record<string, OptionItem[]> = {
   part_time_type: PART_TIME_TYPE_OPTIONS,
   have_probation: PROBATION_STATUS_OPTIONS,
   need_probation_work: PROCESS_REQUIRED_OPTIONS,
-  need_training: PROCESS_REQUIRED_OPTIONS,
   salary_period: SETTLEMENT_CYCLE_OPTIONS,
   day_of_month: [
     { label: '当日结', value: '1', apiValue: 1 },
@@ -121,10 +120,6 @@ const DICTIONARY_ALIASES: DictionaryAliasMap = {
     '1': ['无试用期', '无', '没有'],
   },
   need_probation_work: {
-    '1': ['需要', '是', '有'],
-    '0': ['不需要', '否', '无', '没有'],
-  },
-  need_training: {
     '1': ['需要', '是', '有'],
     '0': ['不需要', '否', '无', '没有'],
   },
@@ -234,16 +229,12 @@ const DICTIONARY_ALIASES: DictionaryAliasMap = {
     '4': ['其他'],
   },
   probation_work_period_unit: {
-    day: ['天'],
-    hour: ['小时'],
-    '1': ['天'],
-    '2': ['小时'],
+    '1': ['天', 'day'],
+    '2': ['小时', 'hour'],
   },
   train_period_unit: {
-    '1': ['天'],
-    '2': ['小时'],
-    day: ['天'],
-    hour: ['小时'],
+    '1': ['天', 'day'],
+    '2': ['小时', 'hour'],
   },
 };
 
@@ -297,8 +288,29 @@ export function resolveDictionaryValue(type: string, value: unknown): string | n
   return matchedOption?.apiValue ?? matchedOption?.value;
 }
 
-export function resolveDictionaryString(type: string, value: unknown): string | undefined {
+function resolveDictionaryCanonicalValue(type: string, value: unknown): string | number | undefined {
+  const numberValue = normalizeNumber(value);
+  const options = DICTIONARY_OPTIONS[type] || [];
+  if (numberValue != null) {
+    const matchedByApiValue = options.find(option => option.apiValue === numberValue);
+    if (matchedByApiValue) {
+      return matchedByApiValue.value;
+    }
+  }
+
   const resolved = resolveDictionaryValue(type, value);
+  if (resolved === undefined) {
+    return undefined;
+  }
+
+  const matchedByApiValue = options.find(option =>
+    option.apiValue !== undefined && String(option.apiValue) === String(resolved),
+  );
+  return matchedByApiValue?.value ?? resolved;
+}
+
+export function resolveDictionaryString(type: string, value: unknown): string | undefined {
+  const resolved = resolveDictionaryCanonicalValue(type, value);
   return resolved === undefined ? undefined : String(resolved);
 }
 
@@ -325,6 +337,9 @@ export function getDictionaryLabel(type: string, value: unknown): string | undef
   }
 
   const options = DICTIONARY_OPTIONS[type] || [];
-  const option = options.find(item => String(item.value) === String(resolved));
+  const option = options.find(item =>
+    String(item.value) === String(resolved) ||
+    (item.apiValue !== undefined && String(item.apiValue) === String(resolved)),
+  );
   return option?.label ?? String(value);
 }

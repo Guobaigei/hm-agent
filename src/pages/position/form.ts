@@ -86,27 +86,27 @@ export function mergePositionValues(
   return cleanPositionFormValues({
     ...base,
     ...patch,
-    maleRequirement: {
-      ...(base.maleRequirement || {}),
-      ...(patch.maleRequirement || {}),
-    },
-    femaleRequirement: {
-      ...(base.femaleRequirement || {}),
-      ...(patch.femaleRequirement || {}),
-    },
-    probationSalaryConfig: {
-      ...(base.probationSalaryConfig || {}),
-      ...(patch.probationSalaryConfig || {}),
-    },
-    trainingSalaryConfig: {
-      ...(base.trainingSalaryConfig || {}),
-      ...(patch.trainingSalaryConfig || {}),
-    },
+    maleRequirement: mergeOptionalObject(base.maleRequirement, patch.maleRequirement),
+    femaleRequirement: mergeOptionalObject(base.femaleRequirement, patch.femaleRequirement),
+    probationSalaryConfig: mergeOptionalObject(base.probationSalaryConfig, patch.probationSalaryConfig),
+    trainingSalaryConfig: mergeOptionalObject(base.trainingSalaryConfig, patch.trainingSalaryConfig),
     recruitStoreAllocations: mergeStoreAllocations(
       base.recruitStoreAllocations,
       patch.recruitStoreAllocations,
     ),
   });
+}
+
+function mergeOptionalObject<T extends object>(
+  base?: T,
+  patch?: Partial<T>,
+): T | undefined {
+  const merged = {
+    ...(base || {}),
+    ...(patch || {}),
+  } as T;
+
+  return hasMeaningfulValue(merged) ? merged : undefined;
 }
 
 function mergeStoreAllocations(
@@ -817,11 +817,12 @@ export function normalizeCanonicalValues(values: PositionFormValues): PositionFo
   next.cooperationMode = resolveDictionaryString('cooperation_mode', next.cooperationMode) as PositionFormValues['cooperationMode'];
   next.probationStatus = resolveDictionaryString('have_probation', next.probationStatus) as PositionFormValues['probationStatus'];
   next.trialRequired = resolveDictionaryString('need_probation_work', next.trialRequired) as PositionFormValues['trialRequired'];
-  next.trainingRequired = resolveDictionaryString('need_training', next.trainingRequired) as PositionFormValues['trainingRequired'];
+  next.trainingRequired = resolveDictionaryString('need_probation_work', next.trainingRequired) as PositionFormValues['trainingRequired'];
   next.settlementCycle = resolveDictionaryString('salary_period', next.settlementCycle) as PositionFormValues['settlementCycle'];
   next.baseSalaryUnit = resolveDictionaryString('salary_unit6', next.baseSalaryUnit) as PositionFormValues['baseSalaryUnit'];
   next.salaryRangeUnit = resolveDictionaryString('salary_unit3', next.salaryRangeUnit) as PositionFormValues['salaryRangeUnit'];
   next.commercialInsurance = resolveDictionaryString('have_insurance', next.commercialInsurance) as PositionFormValues['commercialInsurance'];
+  next.nationality = resolveDictionaryString('spone_country_requirement_type', next.nationality) as PositionFormValues['nationality'];
 
   next.projectId = normalizeNumber(next.projectId) ?? next.projectId;
   next.brandId = normalizeNumber(next.brandId) ?? next.brandId;

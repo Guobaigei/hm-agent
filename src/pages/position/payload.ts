@@ -5,6 +5,8 @@ import {
 import { cleanPositionFormValues } from './form.ts';
 import type {
   PositionFormValues,
+  PositionInterviewCycleRule,
+  PositionInterviewFixedSlot,
   PositionInterviewRoundConfig,
   PositionSalaryConfig,
   PositionStoreAllocation,
@@ -98,7 +100,7 @@ function mapBasicInfo(
         : undefined,
     cooperationMode: resolveDictionaryNumber('cooperation_mode', values.cooperationMode),
     needProbationWork: resolveDictionaryNumber('need_probation_work', values.trialRequired),
-    needTraining: resolveDictionaryNumber('need_training', values.trainingRequired),
+    needTraining: resolveDictionaryNumber('need_probation_work', values.trainingRequired),
   });
 }
 
@@ -377,6 +379,7 @@ function mapProcessRequirement(values: PositionFormValues) {
     interviewTimeMode: hasInterview
       ? resolveDictionaryNumber('interview_time_mode', values.interviewTimeMode)
       : undefined,
+    interviewTimes: hasInterview ? mapInterviewTimes(values) : undefined,
     firstInterviewWay: mapRoundMode(firstRound),
     secondInterviewWay: mapRoundMode(secondRound),
     thirdInterviewWay: mapRoundMode(thirdRound),
@@ -455,6 +458,72 @@ function mapJobStores(rows: PositionStoreAllocation[] | undefined) {
   return result.length ? result : undefined;
 }
 
+function mapInterviewTimes(values: PositionFormValues): Array<Record<string, unknown>> | undefined {
+  if (values.interviewTimeMode === '2') {
+    const groupedCycleRules = new Map<string, {
+      weekdays?: number[];
+      times: Array<Record<string, unknown>>;
+    }>();
+
+    values.interviewCycleRules?.forEach((rule: PositionInterviewCycleRule, index) => {
+      const weekdayValue = normalizeWeekday(rule.weekday);
+      const time = pruneEmpty({
+        start: toTimeSeconds(rule.startTime),
+        end: toTimeSeconds(rule.endTime),
+        cycleDeadlineDay:
+          values.interviewDeadlineEnabled === true && rule.deadlineDayOffset
+            ? normalizeDeadlineDay(rule.deadlineDayOffset)
+            : undefined,
+        cycleDeadlineEnd:
+          values.interviewDeadlineEnabled === true
+            ? toTimeSeconds(rule.deadlineTime)
+            : undefined,
+      });
+
+      if (!time) {
+        return;
+      }
+
+      const groupKey = weekdayValue !== undefined ? String(weekdayValue) : `empty-${index}`;
+      const currentGroup = groupedCycleRules.get(groupKey) ?? {
+        weekdays: weekdayValue !== undefined ? [weekdayValue] : undefined,
+        times: [],
+      };
+      currentGroup.times.push(time);
+      groupedCycleRules.set(groupKey, currentGroup);
+    });
+
+    const result = Array.from(groupedCycleRules.values())
+      .map(group => pruneEmpty(group))
+      .filter(Boolean) as Record<string, unknown>[];
+    return result.length ? result : undefined;
+  }
+
+  if (values.interviewTimeMode === '1') {
+    const rows = values.interviewFixedSlots
+      ?.map((slot: PositionInterviewFixedSlot) =>
+        pruneEmpty({
+          interviewDate: slot.interviewDate,
+          times: ([
+            pruneEmpty({
+              start: toTimeSeconds(slot.startTime),
+              end: toTimeSeconds(slot.endTime),
+              fixedDeadline:
+                values.interviewDeadlineEnabled === true && slot.deadline
+                  ? slot.deadline
+                  : undefined,
+            }),
+          ].filter(Boolean) as Record<string, unknown>[]),
+        }),
+      )
+      .filter(Boolean) as Record<string, unknown>[];
+
+    return rows?.length ? rows : undefined;
+  }
+
+  return undefined;
+}
+
 function mapJobEnvImages(values: PositionFormValues) {
   return values.workEnvironmentImages?.slice(0, 3).map((url, index) =>
     pruneEmpty({
@@ -488,7 +557,21 @@ function mapRoundMode(round?: PositionInterviewRoundConfig) {
   return resolveDictionaryNumber('spone_interview_way', round?.interviewMode);
 }
 
-function normalizeWeekday(value: string): number | undefined {
+function normalizeDeadlineDay(value: string): number | undefined {
+  const deadlineDayMap: Record<string, number> = {
+    '0': 0,
+    '-1': -1,
+    '-2': -2,
+  };
+
+  return deadlineDayMap[value];
+}
+
+function normalizeWeekday(value?: string): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
   const weekdayMap: Record<string, number> = {
     '0': 0,
     '1': 1,

@@ -6,6 +6,7 @@ import type { AppConfig } from '../core/config.ts';
 import {
   buildPositionFormValuesFromDetail,
   mapPositionResultSummary,
+  PositionApiError,
   PositionApiClient,
 } from './client.ts';
 import { PositionDraftStore } from './draftStore.ts';
@@ -45,7 +46,9 @@ import type {
 } from './types.ts';
 import {
   formatMarkdownTable,
+  buildEndpointUrl,
   hasMeaningfulValue,
+  isObjectRecord,
   normalizeForMatch,
   normalizeNumber,
   normalizeString,
@@ -102,7 +105,18 @@ type CreateSourceDiscoveryResult = {
   response?: PositionToolResponse;
 };
 
+type TimedCache<T> = {
+  expiresAt: number;
+  value?: T;
+  promise?: Promise<T>;
+};
+
+const OPTION_CACHE_TTL_MS = 5 * 60 * 1000;
+
 export class PositionService {
+  private jobTypesCache?: TimedCache<OptionEntity[]>;
+  private cityOptionsCache?: TimedCache<OptionEntity[]>;
+
   constructor(private readonly dependencies: PositionServiceDependencies) {}
 
   async chat(request: PositionToolRequest): Promise<PositionToolResponse> {
@@ -119,6 +133,11 @@ export class PositionService {
   }
 
   private async dispatchChat(request: PositionToolRequest): Promise<PositionToolResponse> {
+    const draftLookupResponse = this.lookupDraftByMessage(request.message);
+    if (draftLookupResponse) {
+      return draftLookupResponse;
+    }
+
     const pendingDraft = this.dependencies.draftStore.getBySession(request.sessionId);
     const parsed = await this.parseWithOptionalPlanners(request.message, pendingDraft);
 
@@ -156,7 +175,7 @@ export class PositionService {
     }
 
     if (parsed.intent === 'create_preview') {
-      return this.createPreview(request.sessionId, parsed);
+      return this.createPreview(request.sessionId, request.message, parsed);
     }
 
     if (parsed.intent === 'edit_preview') {
@@ -185,6 +204,14 @@ export class PositionService {
     pendingDraft?: PendingPositionDraft,
   ): Promise<ParsedPositionMessage> {
     let parsed = parsePositionMessage(message);
+    const slotAnswer = inferPendingDraftSlotAnswer(message, parsed, pendingDraft);
+    if (slotAnswer) {
+      return slotAnswer;
+    }
+
+    if (pendingDraft && shouldBypassPlannerForPendingDraft(message, parsed)) {
+      return parsed;
+    }
 
     if (this.dependencies.createPlanner && shouldUseCreatePlanner(message, parsed, pendingDraft)) {
       const plan = await this.dependencies.createPlanner.planCreate({ message, parsed });
@@ -198,6 +225,69 @@ export class PositionService {
     }
     const plan = await this.dependencies.searchPlanner.planSearch({ message, parsed });
     return plan ? mergeSearchPlanningResult(parsed, plan) : parsed;
+  }
+
+  private async getCachedJobTypes(usedTools: string[]): Promise<OptionEntity[]> {
+    const now = Date.now();
+    if (this.jobTypesCache?.value && this.jobTypesCache.expiresAt > now) {
+      return this.jobTypesCache.value;
+    }
+    if (this.jobTypesCache?.promise && this.jobTypesCache.expiresAt > now) {
+      return this.jobTypesCache.promise;
+    }
+
+    const promise = this.dependencies.positionApiClient.getJobTypes()
+      .then(jobTypes => {
+        this.jobTypesCache = {
+          value: jobTypes,
+          expiresAt: Date.now() + OPTION_CACHE_TTL_MS,
+        };
+        return jobTypes;
+      })
+      .catch(error => {
+        if (this.jobTypesCache?.promise === promise) {
+          this.jobTypesCache = undefined;
+        }
+        throw error;
+      });
+    this.jobTypesCache = {
+      promise,
+      expiresAt: now + OPTION_CACHE_TTL_MS,
+    };
+    usedTools.push('position.getJobTypes');
+    return promise;
+  }
+
+  private async getCachedCityOptions(usedTools: string[]): Promise<OptionEntity[]> {
+    const now = Date.now();
+    if (this.cityOptionsCache?.value && this.cityOptionsCache.expiresAt > now) {
+      return this.cityOptionsCache.value;
+    }
+    if (this.cityOptionsCache?.promise && this.cityOptionsCache.expiresAt > now) {
+      return this.cityOptionsCache.promise;
+    }
+
+    const promise = this.dependencies.positionApiClient.getProvinceList()
+      .then(provinces => {
+        const cityOptions = flattenCities(provinces);
+        this.cityOptionsCache = {
+          value: cityOptions,
+          expiresAt: Date.now() + OPTION_CACHE_TTL_MS,
+        };
+        return cityOptions;
+      })
+      .catch(error => {
+        if (this.cityOptionsCache?.promise === promise) {
+          this.cityOptionsCache = undefined;
+        }
+        throw error;
+      });
+    this.cityOptionsCache = {
+      promise,
+      expiresAt: now + OPTION_CACHE_TTL_MS,
+    };
+    usedTools.push('position.getProvinceList');
+    return promise;
   }
 
   private async searchPositions(
@@ -409,8 +499,7 @@ export class PositionService {
     const usedTools: string[] = [];
 
     if (parsed.references.cityNames?.length) {
-      const cities = flattenCities(await this.dependencies.positionApiClient.getProvinceList());
-      usedTools.push('position.getProvinceList');
+      const cities = await this.getCachedCityOptions(usedTools);
       const cityIds: number[] = [];
       for (const cityName of parsed.references.cityNames) {
         const selected = selectUniqueOption(cities, cityName, '城市', issues);
@@ -550,6 +639,7 @@ export class PositionService {
 
   private async createPreview(
     sessionId: string,
+    message: string,
     parsed: ParsedPositionMessage,
   ): Promise<PositionToolResponse> {
     const inherited = await this.resolveInheritedCreateSource(sessionId, parsed);
@@ -559,13 +649,6 @@ export class PositionService {
 
     const baseValues = inherited.values ?? createDefaultPositionFormValues();
     const resolved = await this.resolveCreateReferences(parsed, baseValues);
-    if (resolved.issues.length) {
-      return buildClarifyResponse('需要先确认新建岗位中的选项：', resolved.issues, [
-        ...inherited.usedTools,
-        ...resolved.usedTools,
-      ]);
-    }
-
     const values = normalizeCanonicalValues(
       mergePositionValues(baseValues, {
         ...parsed.patch,
@@ -577,9 +660,42 @@ export class PositionService {
       ...resolved.patch,
     });
 
+    if (resolved.issues.length) {
+      const usedTools = [
+        ...inherited.usedTools,
+        ...resolved.usedTools,
+      ];
+      const stored = await this.storeAndReturnPreview({
+        sessionId,
+        mode: 'create',
+        action: parsed.action ?? 'save',
+        values,
+        originalValues: inherited.originalValues,
+        userPatch,
+        jobBasicInfoId: undefined,
+        sendMsgToSupplier: parsed.sendMsgToSupplier,
+        usedTools,
+      });
+
+      return {
+        ...stored,
+        reply: buildDraftClarifyReply(
+          stored.draftId!,
+          '需要先确认新建岗位中的选项：',
+          resolved.issues,
+        ),
+        intent: 'clarify',
+        needsClarification: true,
+        needsConfirmation: false,
+        validationErrors: resolved.issues,
+        usedTools,
+      };
+    }
+
     if (!inherited.values) {
       const discovered = await this.discoverCreateSourceForIncompleteValues(
         sessionId,
+        message,
         parsed,
         values,
         userPatch,
@@ -614,6 +730,30 @@ export class PositionService {
       sendMsgToSupplier: parsed.sendMsgToSupplier,
       usedTools: [...inherited.usedTools, ...resolved.usedTools],
     });
+  }
+
+  private lookupDraftByMessage(message: string): PositionToolResponse | undefined {
+    const draftId = parseDraftIdReference(message);
+    if (!draftId) {
+      return undefined;
+    }
+
+    const draft = this.dependencies.draftStore.getById(draftId);
+    if (!draft) {
+      return {
+        reply: [
+          `当前进程里没有找到 draftId: ${draftId} 对应的岗位草稿。`,
+          '草稿只保存在当前 agent 进程内存里；如果 CLI/MCP 服务重启、会话过期，或这个 draftId 来自另一个会话，就无法继续读取。',
+          '请重新发起新建/编辑岗位，或在仍保留该草稿的同一会话里继续操作。',
+        ].join('\n'),
+        intent: 'clarify',
+        needsClarification: true,
+        needsConfirmation: false,
+        usedTools: [],
+      };
+    }
+
+    return this.describePendingDraft(draft);
   }
 
   private async resolveInheritedCreateSource(
@@ -685,6 +825,7 @@ export class PositionService {
 
   private async discoverCreateSourceForIncompleteValues(
     sessionId: string,
+    message: string,
     parsed: ParsedPositionMessage,
     values: PositionFormValues,
     userPatch: Partial<PositionFormValues>,
@@ -695,15 +836,28 @@ export class PositionService {
       return { usedTools: [] };
     }
 
-    if (missingFields.some(field => isCoreCreateEntityField(field.field))) {
-      return { usedTools: [] };
-    }
+    const hasMissingCoreEntities =
+      missingFields.some(field => isCoreCreateEntityField(field.field)) ||
+      validationErrors.some(field => isCoreCreateEntityField(field.field));
 
+    const storeSourceKeywords = buildCreateSourceStoreKeywords(parsed, values);
     const sourceKeywords = buildCreateSourceSearchKeywords(parsed, values);
-    if (sourceKeywords.length) {
-      const found = await this.searchCreateSourceCandidates(sourceKeywords);
-      if (found.candidates.length === 1) {
-        const source = await this.loadCreateSourceValues(found.candidates[0].jobBasicInfoId);
+    const candidateKeywords = hasMissingCoreEntities
+      ? (storeSourceKeywords.length ? storeSourceKeywords : sourceKeywords.slice(0, 2))
+      : sourceKeywords;
+    if (candidateKeywords.length) {
+      const found = await this.searchCreateSourceCandidates(candidateKeywords);
+      const selectedSource = selectCreateSourceCandidate(
+        found.candidates,
+        message,
+        parsed,
+        values,
+        {
+          allowSingleWithoutStrongHints: !hasMissingCoreEntities,
+        },
+      );
+      if (selectedSource) {
+        const source = await this.loadCreateSourceValues(selectedSource.jobBasicInfoId);
         if (source.response) {
           return {
             response: source.response,
@@ -721,7 +875,7 @@ export class PositionService {
         };
       }
 
-      if (found.candidates.length > 1) {
+      if (found.candidates.length) {
         const stored = await this.storeAndReturnPreview({
           sessionId,
           mode: 'create',
@@ -751,6 +905,10 @@ export class PositionService {
       if (found.usedTools.length) {
         priorUsedTools.push(...found.usedTools);
       }
+    }
+
+    if (hasMissingCoreEntities) {
+      return { usedTools: [] };
     }
 
     const contextSourceJobId = this.getContextSourceJobId(sessionId);
@@ -1148,10 +1306,24 @@ export class PositionService {
             sendMsgToSupplier,
           });
 
-    if (pendingDraft.mode === 'create') {
-      await this.dependencies.positionApiClient.createJob(payload);
-    } else {
-      await this.dependencies.positionApiClient.updateJob(payload);
+    try {
+      if (pendingDraft.mode === 'create') {
+        await this.dependencies.positionApiClient.createJob(payload);
+      } else {
+        await this.dependencies.positionApiClient.updateJob(payload);
+      }
+    } catch (error) {
+      if (!isRecoverablePositionApiError(error)) {
+        throw error;
+      }
+
+      return buildCommitApiFailureResponse(
+        error,
+        pendingDraft,
+        action,
+        payload,
+        this.dependencies.config,
+      );
     }
 
     this.dependencies.draftStore.delete(pendingDraft);
@@ -1402,9 +1574,12 @@ export class PositionService {
     const needsDefaultNameOrContent =
       parsed.patch.positionName === undefined ||
       parsed.patch.workContent === undefined;
+    const inferredPositionName = normalizeString(parsed.patch.positionName);
     const inferredCategoryName =
       parsed.references.positionCategoryName ??
-      (parsed.patch.positionCategory === undefined ? normalizeString(parsed.patch.positionName) : undefined);
+      (parsed.patch.positionCategory === undefined && canInferJobTypeFromPositionName(inferredPositionName)
+        ? inferredPositionName
+        : undefined);
 
     if (!inferredCategoryName && parsed.patch.positionCategory === undefined) {
       return;
@@ -1414,8 +1589,7 @@ export class PositionService {
       return;
     }
 
-    const jobTypes = await this.dependencies.positionApiClient.getJobTypes();
-    usedTools.push('position.getJobTypes');
+    const jobTypes = await this.getCachedJobTypes(usedTools);
     const selected = parsed.references.positionCategoryName
       ? selectUniqueOption(jobTypes, parsed.references.positionCategoryName, '职位类别', issues)
       : parsed.patch.positionCategory !== undefined
@@ -1581,8 +1755,7 @@ export class PositionService {
     }
 
     if (parsed.references.positionCategoryName) {
-      const jobTypes = await this.dependencies.positionApiClient.getJobTypes();
-      usedTools.push('position.getJobTypes');
+      const jobTypes = await this.getCachedJobTypes(usedTools);
       const selected = selectUniqueOption(jobTypes, parsed.references.positionCategoryName, '职位类别', issues);
       if (selected) {
         patch.positionCategory = selected.id;
@@ -1761,6 +1934,93 @@ function prepareInheritedCreateValues(values: PositionFormValues): PositionFormV
   };
 }
 
+function parseDraftIdReference(message: string): string | undefined {
+  return message.match(/draftId\s*[:：#]?\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1];
+}
+
+function inferPendingDraftSlotAnswer(
+  message: string,
+  parsed: ParsedPositionMessage,
+  pendingDraft?: PendingPositionDraft,
+): ParsedPositionMessage | undefined {
+  if (!pendingDraft || parsed.intent === 'commit' || parsed.intent === 'cancel') {
+    return undefined;
+  }
+
+  if (isPendingDraftInspectionMessage(message)) {
+    return undefined;
+  }
+
+  if (
+    Object.keys(parsed.patch).length > 0 ||
+    Object.keys(parsed.references).length > 0 ||
+    parsed.jobBasicInfoId ||
+    parsed.sourceJobBasicInfoId ||
+    parsed.inheritFromContext
+  ) {
+    return undefined;
+  }
+
+  const text = normalizePendingSlotText(message);
+  if (!text) {
+    return undefined;
+  }
+
+  const unresolvedFields = new Set([
+    ...pendingDraft.missingFields.map(issue => issue.field),
+    ...pendingDraft.validationErrors.map(issue => issue.field),
+  ]);
+
+  if (unresolvedFields.has('positionCategory')) {
+    return {
+      ...parsed,
+      intent: pendingDraft.mode === 'create' ? 'create_preview' : 'edit_preview',
+      references: {
+        ...parsed.references,
+        positionCategoryName: text,
+      },
+    };
+  }
+
+  if (unresolvedFields.has('positionName')) {
+    return {
+      ...parsed,
+      intent: pendingDraft.mode === 'create' ? 'create_preview' : 'edit_preview',
+      patch: {
+        ...parsed.patch,
+        positionName: text,
+      },
+    };
+  }
+
+  return undefined;
+}
+
+function normalizePendingSlotText(message: string): string | undefined {
+  const text = normalizeString(message)
+    ?.replace(/^(?:职位类别|岗位类别|工种)(?:名称)?(?:是|为|叫|选|选择|设置为|设为|改为|改成)?[:：\s]*/u, '')
+    .replace(/(?:的)?(?:岗位|职位)$/u, '')
+    .trim();
+
+  if (!text || text.length > 30) {
+    return undefined;
+  }
+
+  if (/[，,。；;\n]/.test(text)) {
+    return undefined;
+  }
+
+  if (/^(确认|保存|提交|发布|取消|放弃|不要了|都不用|不用|继续|空白|模板|参考|一致|一样|什么|为什么|为啥|怎么|情况|能看到|看得到|缺什么|还需要|预览|草稿|当前|现在|已填|填写)/.test(text)) {
+    return undefined;
+  }
+
+  if (/draftId|岗位\s*(?:ID|id|编号)|职位\s*(?:ID|id|编号)/i.test(text)) {
+    return undefined;
+  }
+
+  return text;
+}
+
 function shouldApplyCreateSourceToPendingDraft(
   message: string,
   parsed: ParsedPositionMessage,
@@ -1801,6 +2061,7 @@ function buildCreateSourceSearchKeywords(
   values: PositionFormValues,
 ): string[] {
   const rawKeywords = [
+    ...buildCreateSourceStoreKeywords(parsed, values),
     normalizeString(values.positionName),
     normalizeString(parsed.search.searchJobName),
     normalizeString(parsed.references.brandName),
@@ -1810,9 +2071,243 @@ function buildCreateSourceSearchKeywords(
 
   return Array.from(new Set(
     rawKeywords
-      .map(keyword => keyword?.replace(/岗位|职位|招聘/g, '').trim())
+      .map(normalizeCreateSourceKeyword)
       .filter((keyword): keyword is string => Boolean(keyword && keyword.length >= 2)),
   ));
+}
+
+function buildCreateSourceStoreKeywords(
+  parsed: ParsedPositionMessage,
+  values: PositionFormValues,
+): string[] {
+  return Array.from(new Set(
+    [
+      ...(parsed.references.storeNames || []),
+      ...(values.recruitStoreAllocations?.map(row => row.storeName) || []),
+    ]
+      .map(normalizeCreateSourceKeyword)
+      .filter((keyword): keyword is string => Boolean(keyword && keyword.length >= 2)),
+  ));
+}
+
+function normalizeCreateSourceKeyword(keyword?: string): string | undefined {
+  return keyword?.replace(/岗位|职位|招聘/g, '').trim();
+}
+
+type CreateSourceSelectionHints = {
+  storeNames: string[];
+  hasStoreHint: boolean;
+  hasTemplateIntent: boolean;
+  hasEmploymentHint: boolean;
+  employmentType?: PositionFormValues['employmentType'];
+  partTimeType?: PositionFormValues['partTimeType'];
+  positionCategoryNames: string[];
+  recruitCount?: number;
+};
+
+function selectCreateSourceCandidate(
+  candidates: PositionResultSummary[],
+  message: string,
+  parsed: ParsedPositionMessage,
+  values: PositionFormValues,
+  options: { allowSingleWithoutStrongHints: boolean },
+): PositionResultSummary | undefined {
+  if (!candidates.length) {
+    return undefined;
+  }
+
+  const hints = buildCreateSourceSelectionHints(message, parsed, values);
+  const scored = candidates
+    .map(candidate => ({
+      candidate,
+      score: scoreCreateSourceCandidate(candidate, hints),
+    }))
+    .sort((left, right) => right.score - left.score);
+  const [best, second] = scored;
+
+  if (!best) {
+    return undefined;
+  }
+
+  if (candidates.length === 1) {
+    if (
+      options.allowSingleWithoutStrongHints ||
+      hints.hasTemplateIntent ||
+      hints.hasEmploymentHint
+    ) {
+      return best.candidate;
+    }
+    return undefined;
+  }
+
+  const hasStrongAutoHint =
+    hints.hasTemplateIntent ||
+    hints.hasEmploymentHint ||
+    hints.positionCategoryNames.length > 0;
+  if (!hasStrongAutoHint) {
+    return undefined;
+  }
+
+  const scoreGap = best.score - (second?.score ?? 0);
+  if (best.score >= 45 && scoreGap >= 20) {
+    return best.candidate;
+  }
+
+  const bestHasExactEmploymentType = hasExactEmploymentTypeMatch(best.candidate, hints);
+  const secondHasExactEmploymentType = second ? hasExactEmploymentTypeMatch(second.candidate, hints) : false;
+  if (
+    hints.hasStoreHint &&
+    best.score >= 40 &&
+    bestHasExactEmploymentType &&
+    !secondHasExactEmploymentType
+  ) {
+    return best.candidate;
+  }
+
+  const bestHasExactRecruitCount = hasExactRecruitCount(best.candidate, hints);
+  const secondHasExactRecruitCount = second ? hasExactRecruitCount(second.candidate, hints) : false;
+  if (
+    best.score >= 45 &&
+    scoreGap >= 5 &&
+    bestHasExactRecruitCount &&
+    !secondHasExactRecruitCount &&
+    hints.hasEmploymentHint
+  ) {
+    return best.candidate;
+  }
+
+  return undefined;
+}
+
+function buildCreateSourceSelectionHints(
+  message: string,
+  parsed: ParsedPositionMessage,
+  values: PositionFormValues,
+): CreateSourceSelectionHints {
+  const storeNames = Array.from(new Set([
+    ...(parsed.references.storeNames || []),
+    ...(values.recruitStoreAllocations?.map(row => row.storeName).filter((item): item is string => Boolean(item)) || []),
+  ]));
+  const employmentType = parsed.patch.employmentType;
+  const partTimeType = parsed.patch.partTimeType;
+  const positionCategoryNames = Array.from(new Set([
+    normalizeString(parsed.references.positionCategoryName),
+    normalizeString(values.positionCategoryName),
+  ].filter((item): item is string => Boolean(item))));
+  const recruitCount =
+    parsed.patch.recruitStoreAllocations?.find(row => row.recruitCount !== undefined)?.recruitCount ??
+    values.recruitStoreAllocations?.find(row => row.recruitCount !== undefined)?.recruitCount;
+
+  return {
+    storeNames,
+    hasStoreHint: storeNames.length > 0,
+    hasTemplateIntent: /其他信息|其它信息|剩下|其余|参考|照着|按照|跟|和|同|模板|一致|一样|相同/.test(message),
+    hasEmploymentHint: Boolean(employmentType || partTimeType || /全职|兼职|小时工|寒假工|暑假工/.test(message)),
+    employmentType,
+    partTimeType,
+    positionCategoryNames,
+    recruitCount,
+  };
+}
+
+function scoreCreateSourceCandidate(
+  candidate: PositionResultSummary,
+  hints: CreateSourceSelectionHints,
+): number {
+  const name = normalizeForMatch(candidate.name);
+  let score = 0;
+
+  for (const storeName of hints.storeNames) {
+    if (name.includes(normalizeForMatch(storeName))) {
+      score += 50;
+      break;
+    }
+  }
+
+  for (const categoryName of hints.positionCategoryNames) {
+    if (name.includes(normalizeForMatch(categoryName))) {
+      score += 24;
+      break;
+    }
+  }
+
+  if (hints.employmentType === 'full-time') {
+    if (/全职/.test(candidate.name)) {
+      score += 35;
+    } else if (/兼职|小时工|寒假工|暑假工/.test(candidate.name)) {
+      score -= 20;
+    }
+  }
+
+  if (hints.employmentType === 'part-time') {
+    if (/兼职|小时工|寒假工|暑假工/.test(candidate.name)) {
+      score += 16;
+    }
+    if (hints.partTimeType && candidateMatchesPartTimeType(candidate.name, hints.partTimeType)) {
+      score += 28;
+    } else if (hints.partTimeType === '5' && /兼职/.test(candidate.name)) {
+      score += 8;
+    }
+    if (/全职/.test(candidate.name)) {
+      score -= 20;
+    }
+  }
+
+  if (hints.recruitCount !== undefined && candidate.recruitCount !== undefined) {
+    if (candidate.recruitCount === hints.recruitCount) {
+      score += 8;
+    } else if (Math.abs(candidate.recruitCount - hints.recruitCount) <= 1) {
+      score += 3;
+    }
+  }
+
+  if (candidate.status === 'published') {
+    score += 2;
+  }
+
+  return score;
+}
+
+function hasExactRecruitCount(
+  candidate: PositionResultSummary,
+  hints: CreateSourceSelectionHints,
+): boolean {
+  return hints.recruitCount !== undefined && candidate.recruitCount === hints.recruitCount;
+}
+
+function hasExactEmploymentTypeMatch(
+  candidate: PositionResultSummary,
+  hints: CreateSourceSelectionHints,
+): boolean {
+  if (hints.partTimeType) {
+    return candidateMatchesPartTimeType(candidate.name, hints.partTimeType);
+  }
+
+  if (hints.employmentType === 'full-time') {
+    return /全职/.test(candidate.name);
+  }
+
+  if (hints.employmentType === 'part-time') {
+    return /兼职|小时工|寒假工|暑假工/.test(candidate.name);
+  }
+
+  return false;
+}
+
+function candidateMatchesPartTimeType(
+  candidateName: string,
+  partTimeType: PositionFormValues['partTimeType'],
+): boolean {
+  if (partTimeType === '5') {
+    return /小时工/.test(candidateName);
+  }
+  if (partTimeType === '3') {
+    return /寒假工/.test(candidateName);
+  }
+  if (partTimeType === '4') {
+    return /暑假工/.test(candidateName);
+  }
+  return false;
 }
 
 function deriveBrandLikeKeywords(positionName?: string): string[] {
@@ -1833,6 +2328,18 @@ function deriveBrandLikeKeywords(positionName?: string): string[] {
   }
 
   return result;
+}
+
+function canInferJobTypeFromPositionName(positionName?: string): boolean {
+  if (!positionName) {
+    return false;
+  }
+
+  if (/[A-Za-z0-9]/.test(positionName) || /测试|test/i.test(positionName)) {
+    return false;
+  }
+
+  return /(服务员|理货员|营业员|店员|迎宾|收银员|导购|配送员|分拣员|厨师|后厨|保洁|店长|促销员|客服|接待|传菜|撤菜)/.test(positionName);
 }
 
 function extractDraftOverrides(values: PositionFormValues): Partial<PositionFormValues> {
@@ -1895,9 +2402,13 @@ function shouldDescribePendingDraft(
   parsed: ParsedPositionMessage,
 ): boolean {
   return (
-    /还需要|缺什么|补充哪些|哪些没填|当前预览|草稿|预览|继续/.test(message) ||
+    isPendingDraftInspectionMessage(message) ||
     (parsed.intent === 'clarify' && Object.keys(parsed.patch).length === 0)
   );
+}
+
+function isPendingDraftInspectionMessage(message: string): boolean {
+  return /还需要|缺什么|补充哪些|哪些没填|当前预览|草稿|预览|继续|现在.*(?:填|写)|(?:填|写).*什么|已填|已经填/.test(message);
 }
 
 function shouldShowPositionDetail(message: string, parsed: ParsedPositionMessage): boolean {
@@ -1929,6 +2440,35 @@ function shouldUseSearchPlanner(message: string, parsed: ParsedPositionMessage):
   return /岗位|职位|招聘|工种|查询|查|搜索|找|看看|看下|看一下|详情|详细|哪些|列表/.test(message);
 }
 
+function shouldBypassPlannerForPendingDraft(
+  message: string,
+  parsed: ParsedPositionMessage,
+): boolean {
+  if (isPendingDraftInspectionMessage(message)) {
+    return true;
+  }
+
+  return isSimplePendingDraftFieldClarification(parsed);
+}
+
+function isSimplePendingDraftFieldClarification(parsed: ParsedPositionMessage): boolean {
+  if (
+    parsed.jobBasicInfoId ||
+    parsed.sourceJobBasicInfoId ||
+    parsed.inheritFromContext
+  ) {
+    return false;
+  }
+
+  const patchKeys = Object.keys(parsed.patch);
+  const referenceKeys = Object.keys(parsed.references);
+  if (referenceKeys.length === 1 && referenceKeys[0] === 'positionCategoryName' && patchKeys.length === 0) {
+    return true;
+  }
+
+  return patchKeys.length === 1 && patchKeys[0] === 'positionName' && referenceKeys.length === 0;
+}
+
 function shouldUseCreatePlanner(
   message: string,
   parsed: ParsedPositionMessage,
@@ -1938,7 +2478,12 @@ function shouldUseCreatePlanner(
     return false;
   }
 
-  if (parsed.jobBasicInfoId || parsed.sourceJobBasicInfoId || parsed.inheritFromContext) {
+  const isInheritedCreate = Boolean(parsed.sourceJobBasicInfoId || parsed.inheritFromContext);
+  if (isInheritedCreate) {
+    return shouldUseCreatePlannerForInheritedCreate(message, parsed);
+  }
+
+  if (parsed.jobBasicInfoId) {
     return false;
   }
 
@@ -1951,6 +2496,24 @@ function shouldUseCreatePlanner(
     (/新建|新增|创建|发布一个|发一个|(?:帮我|给我|请)?(?:先)?建(?:一个|个)?/.test(message) &&
       /岗位|职位|招聘|工种|门店|项目|品牌/.test(message))
   );
+}
+
+function shouldUseCreatePlannerForInheritedCreate(
+  message: string,
+  parsed: ParsedPositionMessage,
+): boolean {
+  if (Object.keys(parsed.patch).length > 0 || Object.keys(parsed.references).length > 0) {
+    return true;
+  }
+
+  const remainder = message
+    .replace(/\d{3,}/g, '')
+    .replace(/ID|id|编号/g, '')
+    .replace(/复制|克隆|继承|照着|按照|基于|参考|新建|新增|创建|岗位|职位|一个|一下|下|这个|该|当前|帮我|给我|请/g, '')
+    .replace(/[，,。；;\s:：#-]+/g, '')
+    .trim();
+
+  return remainder.length >= 2;
 }
 
 function mergeCreatePlanningResult(
@@ -2883,9 +3446,23 @@ function buildClarifyResponse(
   };
 }
 
+function buildDraftClarifyReply(
+  draftId: string,
+  prefix: string,
+  issues: FieldIssue[],
+): string {
+  return [
+    `我已先记录当前能识别的新建岗位信息（draftId: ${draftId}）。`,
+    '',
+    buildMissingReply(prefix, [], issues),
+    '',
+    '请补充或更正以上选项后继续。',
+  ].join('\n');
+}
+
 function isRecoverablePositionApiError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /fetch failed|Position request failed|request failed|请求失败|aborted|AbortError|ECONN|ETIMEDOUT|ENOTFOUND|ECONNRESET/i.test(message);
+  return /fetch failed|Position request failed|request failed|请求失败|服务器|暂时|跑丢|aborted|AbortError|ECONN|ETIMEDOUT|ENOTFOUND|ECONNRESET/i.test(message);
 }
 
 function buildPositionApiFailureResponse(error: unknown): PositionToolResponse {
@@ -2901,6 +3478,197 @@ function buildPositionApiFailureResponse(error: unknown): PositionToolResponse {
     needsConfirmation: false,
     usedTools: [],
   };
+}
+
+function buildCommitApiFailureResponse(
+  error: unknown,
+  pendingDraft: PendingPositionDraft,
+  action: PositionCommitAction,
+  payload: Record<string, unknown>,
+  config: AppConfig,
+): PositionToolResponse {
+  const message = error instanceof Error ? error.message : String(error);
+  const apiDetails = formatPositionApiErrorDetails(error);
+  const payloadSummary = formatCommitPayloadSummary(payload);
+  const debugCurl = formatCommitDebugCurl(
+    config,
+    pendingDraft.mode === 'create' ? '/job/create' : '/job/update',
+    payload,
+  );
+  return {
+    reply: [
+      '岗位提交失败，当前没有完成写入，草稿仍然保留。',
+      `错误：${message.slice(0, 160)}`,
+      ...(apiDetails ? ['后端返回：', apiDetails] : []),
+      ...(payloadSummary ? ['本次提交摘要：', payloadSummary] : []),
+      '排查用 curl（token 已脱敏）：',
+      debugCurl,
+      `draftId: ${pendingDraft.draftId}`,
+      '可以稍后直接回复“确认保存”重试；如果连续失败，请检查 HM 服务状态、网络/VPN、HM_BASE_URL 和登录 token。',
+    ].join('\n'),
+    intent: 'clarify',
+    needsClarification: true,
+    needsConfirmation: true,
+    draftId: pendingDraft.draftId,
+    preview: buildPositionPreview({
+      draftId: pendingDraft.draftId,
+      mode: pendingDraft.mode,
+      title: pendingDraft.mode === 'create' ? '新建岗位预览' : '编辑岗位预览',
+      values: pendingDraft.values,
+      action,
+      diff: pendingDraft.diff,
+    }),
+    diff: pendingDraft.diff,
+    usedTools: [
+      pendingDraft.mode === 'create'
+        ? 'position.createJob'
+        : 'position.updateJob',
+    ],
+  };
+}
+
+function formatCommitDebugCurl(
+  config: AppConfig,
+  path: string,
+  payload: Record<string, unknown>,
+): string {
+  const url = buildEndpointUrl(config.hmBaseUrl, path).toString();
+  return [
+    '```bash',
+    `curl ${shellQuote(url)} \\`,
+    `  -H ${shellQuote('Accept: application/json, text/plain, */*')} \\`,
+    `  -H ${shellQuote('Content-Type: application/json')} \\`,
+    `  -H ${shellQuote('Duliday-Token: <DULIDAY_TOKEN>')} \\`,
+    `  --data-raw ${shellQuote(JSON.stringify(payload))}`,
+    '```',
+  ].join('\n');
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function formatPositionApiErrorDetails(error: unknown): string | undefined {
+  if (!(error instanceof PositionApiError)) {
+    return undefined;
+  }
+
+  const rows: string[][] = [];
+  if (error.path) {
+    rows.push(['接口', error.path]);
+  }
+  if (error.status !== undefined) {
+    rows.push(['HTTP状态', `${error.status}${error.statusText ? ` ${error.statusText}` : ''}`]);
+  }
+  if (error.code !== undefined) {
+    rows.push(['业务code', String(error.code)]);
+  }
+  const dataText = summarizeUnknown(error.data);
+  if (dataText) {
+    rows.push(['data', dataText]);
+  }
+  const bodyText = summarizeUnknown(error.responseBody);
+  if (bodyText && bodyText !== dataText) {
+    rows.push(['响应体', bodyText]);
+  }
+
+  return rows.length ? formatMarkdownTable(['项', '值'], rows) : undefined;
+}
+
+function formatCommitPayloadSummary(payload: Record<string, unknown>): string | undefined {
+  const requirement = getObjectValue(payload, 'jobRequirement');
+  const basicInfo = getObjectValue(requirement, 'basicInfo');
+  const salaryWelfare = getObjectValue(requirement, 'salaryWelfare');
+  const workTimeArrangement = getObjectValue(requirement, 'workTimeArrangement');
+  const storeRequirement = getObjectValue(requirement, 'storeRequirement');
+  const jobSalaries = getArrayValue(salaryWelfare, 'jobSalaries');
+  const primarySalary = getObjectValue(jobSalaries?.[0], undefined);
+  const jobStores = getArrayValue(storeRequirement, 'jobStores');
+
+  const rows = [
+    ['immediate', stringifyScalar(payload.immediate)],
+    ['projectId', stringifyScalar(getObjectValue(basicInfo, 'project')?.projectId)],
+    ['brandId', stringifyScalar(getObjectValue(basicInfo, 'brand')?.brandId)],
+    ['jobNickName', stringifyScalar(basicInfo?.jobNickName)],
+    ['jobType', stringifyScalar(basicInfo?.jobType)],
+    ['laborForm', stringifyScalar(basicInfo?.laborForm)],
+    ['cooperationMode', stringifyScalar(basicInfo?.cooperationMode)],
+    ['needProbationWork', stringifyScalar(basicInfo?.needProbationWork)],
+    ['needTraining', stringifyScalar(basicInfo?.needTraining)],
+    ['salaryPeriod', stringifyScalar(primarySalary?.salaryPeriod)],
+    ['salary', stringifyScalar(primarySalary?.salary)],
+    ['salaryUnit', stringifyScalar(primarySalary?.salaryUnit)],
+    ['comprehensiveSalary', stringifyScalar(
+      primarySalary
+        ? `${stringifyScalar(primarySalary.minComprehensiveSalary)}-${stringifyScalar(primarySalary.maxComprehensiveSalary)}/${stringifyScalar(primarySalary.comprehensiveSalaryUnit)}`
+        : undefined,
+    )],
+    ['dailyTimeRange', stringifyScalar(
+      workTimeArrangement
+        ? `${stringifyScalar(workTimeArrangement.goToWorkStartTime)}-${stringifyScalar(workTimeArrangement.goOffWorkStartTime)}`
+        : undefined,
+    )],
+    ['stores', summarizeStores(jobStores)],
+  ].filter(([, value]) => value !== undefined) as string[][];
+
+  return rows.length ? formatMarkdownTable(['字段', '值'], rows) : undefined;
+}
+
+function getObjectValue(value: unknown, key: string | undefined): Record<string, unknown> | undefined {
+  const target = key && isObjectRecord(value) ? value[key] : value;
+  return isObjectRecord(target) ? target : undefined;
+}
+
+function getArrayValue(value: unknown, key: string): unknown[] | undefined {
+  if (!isObjectRecord(value)) {
+    return undefined;
+  }
+  const target = value[key];
+  return Array.isArray(target) ? target : undefined;
+}
+
+function stringifyScalar(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return summarizeUnknown(value);
+}
+
+function summarizeStores(stores: unknown[] | undefined): string | undefined {
+  if (!stores?.length) {
+    return undefined;
+  }
+  return stores
+    .map(store => {
+      if (!isObjectRecord(store)) {
+        return undefined;
+      }
+      return [
+        stringifyScalar(store.storeName) ?? stringifyScalar(store.storeId) ?? '-',
+        `id=${stringifyScalar(store.storeId) ?? '-'}`,
+        `人数=${stringifyScalar(store.requirementNum) ?? '-'}`,
+        `阈值=${stringifyScalar(store.thresholdNum) ?? '-'}`,
+      ].join(' ');
+    })
+    .filter((item): item is string => Boolean(item))
+    .join('；');
+}
+
+function summarizeUnknown(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    return value.slice(0, 240);
+  }
+  try {
+    return JSON.stringify(value).slice(0, 240);
+  } catch {
+    return String(value).slice(0, 240);
+  }
 }
 
 function assertPositionReadiness(config: AppConfig): void {

@@ -142,9 +142,9 @@ export const MATCH_MODE_OPTIONS: OptionItem[] = [
 ];
 
 export const NATIONALITY_OPTIONS: OptionItem[] = [
-  { label: '不限', value: 'unlimited' },
-  { label: '仅要外国人', value: 'foreign-only' },
-  { label: '仅要中国人', value: 'china-only' },
+  { label: '不限', value: 'unlimited', apiValue: 0 },
+  { label: '仅要外国人', value: 'foreign-only', apiValue: 1 },
+  { label: '仅要中国人', value: 'china-only', apiValue: 2 },
 ];
 
 export const CERTIFICATE_OPTIONS: OptionItem[] = [
@@ -244,8 +244,6 @@ export const TRIAL_ASSESSMENT_OPTIONS: OptionItem[] = [
 ];
 
 export const DURATION_UNIT_OPTIONS: OptionItem[] = [
-  { label: '天', value: 'day' },
-  { label: '小时', value: 'hour' },
   { label: '天', value: '1' },
   { label: '小时', value: '2' },
 ];
@@ -332,4 +330,3 @@ export function getFieldLabel(field: string): string {
 export function getFieldTab(field: string): PositionFormTabKey {
   return POSITION_FIELD_SCHEMA.find(item => item.key === field)?.tab ?? 'basic';
 }
-

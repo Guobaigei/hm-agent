@@ -98,7 +98,7 @@ function inferIntent(
 
   if (
     /确认|提交|保存|发布/.test(message) &&
-    !/新建|新增|创建|编辑|修改|更新|查|查询|搜索|找|列表|有哪些|哪些|已发布|未发布|待发布|发布中|在招|已下架|下架|关闭/.test(message)
+    !/新建|新增|创建|发布一个|发一个|编辑|修改|更新|查|查询|搜索|找|列表|有哪些|哪些|已发布|未发布|待发布|发布中|在招|已下架|下架|关闭/.test(message)
   ) {
     return 'commit';
   }
@@ -202,7 +202,7 @@ function isContextInheritanceMessage(message: string, sourceJobBasicInfoId?: num
   return (
     !sourceJobBasicInfoId &&
     (isInheritanceCreateMessage(message) || isSourceInheritanceMessage(message)) &&
-    /这个岗位|该岗位|当前岗位|刚刚的岗位|刚才的岗位|上个岗位|最近的岗位|这个职位|该职位|其他信息|其它信息|剩下|其余/.test(message)
+    /这个岗位|该岗位|当前岗位|刚刚的岗位|刚才的岗位|上个岗位|最近的岗位|这个职位|该职位/.test(message)
   );
 }
 
@@ -245,7 +245,7 @@ function parseSearchParams(message: string): ParsedPositionMessage['search'] {
   }
 
   const searchJobName =
-    matchText(message, /岗位名称[:：\s]*([^\s，,。；;]+)/) ??
+    matchText(message, /岗位名称(?:是|为|叫)?[:：\s]*([^\s，,。；;…]+)/) ??
     extractImplicitJobName(message);
   if (searchJobName && !ids.length) {
     search.searchJobName = cleanupName(searchJobName);
@@ -260,33 +260,40 @@ function parseReferences(
 ): ParsedPositionMessage['references'] {
   const references: ParsedPositionMessage['references'] = {};
   const compositeCreateName = extractCreateCompositeName(message);
-  const projectName = jsonPatch?.projectId
+  const hasExplicitProjectId = Boolean(jsonPatch?.projectId) || /项目\s*(?:ID|id|编号)/i.test(message);
+  const hasExplicitBrandId = Boolean(jsonPatch?.brandId) || /品牌\s*(?:ID|id|编号)/i.test(message);
+  const hasExplicitJobTypeId =
+    Boolean(jsonPatch?.positionCategory) || /(?:职位类别|岗位类别|工种)\s*(?:ID|id|编号)/i.test(message);
+  const hasExplicitStoreId =
+    Boolean(jsonPatch?.recruitStoreAllocations) || /(?:门店|店铺)\s*(?:ID|id|编号)/i.test(message);
+  const projectName = hasExplicitProjectId
     ? undefined
     : stringFromJson(jsonPatch, 'projectName') ??
       matchText(message, /项目(?:名称)?[:：\s]+([^\s，,。；;]+)/) ??
       matchText(message, /项目(?:名称)?(?:改为|改成|调整为|换成|换为|设为|设置为)[:：\s]*([^\s，,。；;]+)/) ??
       matchText(message, /(?:^|[，,。；;\s])项目(?:名称)?(?:是|为|叫)?\s*([\u4e00-\u9fa5A-Za-z0-9_-]+?项目)(?:[，,。；;\s]|$)/) ??
       matchText(message, /([\u4e00-\u9fa5A-Za-z0-9_-]+?)项目(?:下|的|里)?/);
-  const brandName = jsonPatch?.brandId
+  const brandName = hasExplicitBrandId
     ? undefined
     : stringFromJson(jsonPatch, 'brandName') ??
       matchText(message, /品牌(?:名称)?[:：\s]+([^\s，,。；;]+)/) ??
       matchText(message, /品牌(?:名称)?(?:改为|改成|调整为|换成|换为|设为|设置为)[:：\s]*([^\s，,。；;]+)/) ??
       matchText(message, /(?:^|[，,。；;\s])品牌(?:名称)?(?:是|为|叫)?\s*([^\s，,。；;]+)/) ??
-      matchText(message, /([\u4e00-\u9fa5A-Za-z0-9_-]+?)品牌(?:下|的|里)?/) ??
-      compositeCreateName?.brandName;
+      compositeCreateName?.brandName ??
+      matchText(message, /([\u4e00-\u9fa5A-Za-z0-9_-]+?)品牌(?:下|的|里)?/);
   const positionCategoryName =
-    jsonPatch?.positionCategory
+    hasExplicitJobTypeId
       ? undefined
       : stringFromJson(jsonPatch, 'positionCategoryName') ??
-        matchText(message, /(?:职位类别|岗位类别|工种)[:：\s]*([^\s，,。；;]+)/) ??
-        compositeCreateName?.positionName;
+        matchText(message, /(?:职位类别|岗位类别|工种)(?:名称)?(?:是|为|叫|选|选择|设置为|设为|改为|改成)?[:：\s]*([^\s，,。；;]+)/);
   const storeName =
-    jsonPatch?.recruitStoreAllocations
+    hasExplicitStoreId
       ? undefined
       : stringFromJson(jsonPatch, 'storeName') ??
-        matchText(message, /(?:门店|店铺)(?:名称)?[:：\s]+([^\s，,。；;]+)/) ??
+        matchText(message, /(?:门店|店铺)(?:名称)?[:：]\s*([^\s，,。；;]+)/) ??
         matchText(message, /(?:门店|店铺)(?:名称)?(?:改为|改成|调整为|换成|换为|设为|设置为)[:：\s]*([^\s，,。；;]+)/) ??
+        matchText(message, /(?:在|到|给|为)?\s*([^\s，,。；;]+?(?:门店|店铺|店))\s*(?:下|里|中|内)?\s*(?:新建|新增|创建|发布|发|建)/) ??
+        extractScopedStoreName(message) ??
         matchText(message, /(?:^|[，,。；;\s])(?:门店|店铺)(?:名称)?(?:是|为|叫)?\s*([^\s，,。；;]+)/) ??
         compositeCreateName?.storeName;
 
@@ -334,7 +341,7 @@ function parseTextPatch(message: string): Partial<PositionFormValues> {
   }
 
   const positionName =
-    matchText(message, /岗位名称[:：\s]*([^\n，,。；;]+)/) ??
+    matchText(message, /岗位名称(?:是|为|叫)?[:：\s]*([^\n，,。；;…]+)/) ??
     matchText(message, /(?:岗位名称|岗位名)(?:改为|改成|调整为|设为|设置为|命名为|叫)[:：\s]*([^\n，,。；;]+)/) ??
     compositeCreateName?.positionName ??
     matchText(message, /(?:新建|新增|创建)(?:一个)?([^\s，,。；;]+?)(?:岗位|职位)/);
@@ -594,17 +601,18 @@ function parseSchedule(message: string, patch: Partial<PositionFormValues>) {
 
   const timeRange = message.match(/(\d{1,2}:\d{2})\s*(?:-|~|到|至)\s*(\d{1,2}:\d{2})/);
   if (timeRange) {
-    patch.dailyScheduleMode = '2';
-    patch.dailyTimeRange = [formatColonClockTime(timeRange[1]), formatColonClockTime(timeRange[2])];
+    applyDailyTimeRangePatch(patch, [
+      formatColonClockTime(timeRange[1]),
+      formatColonClockTime(timeRange[2]),
+    ]);
   }
 
   const chineseTimeRange = message.match(/(\d{1,2})(?:点|时)(半|[0-5]?\d分?)?\s*(?:-|~|到|至)\s*(\d{1,2})(?:点|时)(半|[0-5]?\d分?)?/);
   if (!timeRange && chineseTimeRange) {
-    patch.dailyScheduleMode = '2';
-    patch.dailyTimeRange = [
+    applyDailyTimeRangePatch(patch, [
       formatChineseClockTime(chineseTimeRange[1], chineseTimeRange[2]),
       formatChineseClockTime(chineseTimeRange[3], chineseTimeRange[4]),
-    ];
+    ]);
   }
 
   const dailyDuration = matchNumber(message, /(?:每天|每日|日工作|灵活排班)\s*(\d+(?:\.\d+)?)\s*(?:小时|h)/i);
@@ -612,6 +620,50 @@ function parseSchedule(message: string, patch: Partial<PositionFormValues>) {
     patch.dailyScheduleMode = '2';
     patch.dailyWorkDuration = dailyDuration;
   }
+}
+
+function applyDailyTimeRangePatch(
+  patch: Partial<PositionFormValues>,
+  range: [string, string],
+) {
+  patch.dailyScheduleMode = '2';
+  patch.dailyTimeRange = range;
+
+  const duration = calculateTimeRangeHours(range);
+  if (duration !== undefined) {
+    patch.dailyWorkDuration = duration;
+  }
+}
+
+function calculateTimeRangeHours(range: [string, string]): number | undefined {
+  const start = parseClockMinutes(range[0]);
+  const end = parseClockMinutes(range[1]);
+  if (start === undefined || end === undefined) {
+    return undefined;
+  }
+
+  const normalizedEnd = end <= start ? end + 24 * 60 : end;
+  const minutes = normalizedEnd - start;
+  if (minutes <= 0) {
+    return undefined;
+  }
+
+  const hours = minutes / 60;
+  return Number.isInteger(hours) ? hours : Number(hours.toFixed(2));
+}
+
+function parseClockMinutes(value: string): number | undefined {
+  const match = value.match(/^(\d{1,2}):([0-5]\d)$/);
+  if (!match) {
+    return undefined;
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23) {
+    return undefined;
+  }
+  return hour * 60 + minute;
 }
 
 function parseProcess(message: string, patch: Partial<PositionFormValues>) {
@@ -646,7 +698,7 @@ function parseProcess(message: string, patch: Partial<PositionFormValues>) {
   if (trialDuration !== undefined) {
     patch.trialRequired = '1';
     patch.trialDuration = trialDuration;
-    patch.trialUnit = /试工[^，,。；;]*小时/.test(message) ? 'hour' : 'day';
+    patch.trialUnit = /试工[^，,。；;]*小时/.test(message) ? '2' : '1';
     patch.trialAddressMode = /试工[^，,。；;]*其他地址/.test(message) ? '2' : '1';
     patch.trialAssessment = /实操/.test(message) ? '2' : /笔试/.test(message) ? '1' : /无考核/.test(message) ? '3' : '3';
   }
@@ -668,7 +720,7 @@ function parseProcess(message: string, patch: Partial<PositionFormValues>) {
 
 function parseStoreAllocation(message: string): PositionStoreAllocation | undefined {
   const storeId = matchNumber(message, /门店\s*(?:ID|id)[:：#\s]*(\d+)/i);
-  const recruitCount = matchCountNumber(message, /(?:招聘人数|招聘|招|人数)(?:改为|改成|调整为|设为|设置为|为|是)?[:：\s]*([一二两三四五六七八九十\d]+)\s*(?:名|个)?人?/);
+  const recruitCount = matchCountNumber(message, /(?:招聘人数|招聘|招|人数)(?:改为|改成|调整为|设为|设置为|为|是)?[:：\s]*(?:小时工|兼职|全职类型?|全职|寒假工|暑假工)?\s*([一二两三四五六七八九十\d]+)\s*(?:名|个)?人?/);
   const thresholdValue = matchNumber(message, /(?:招聘阈值|阈值)[:：\s]*(\d+(?:\.\d+)?)\s*(?:倍)?/);
 
   if (storeId === undefined && recruitCount === undefined) {
@@ -740,6 +792,7 @@ function parseCompositeCreateNameCandidate(value?: string): CompositeCreateName 
 
   const parts = cleanupName(value)
     .replace(/^(?:岗位|职位)[：:\s]*/, '')
+    .replace(/\s*(?:的)?(?:岗位|职位)$/u, '')
     .split(/[-_—–]+/)
     .map(part => cleanupName(part))
     .filter(Boolean);
@@ -765,6 +818,26 @@ function parseCompositeCreateNameCandidate(value?: string): CompositeCreateName 
 
 function isEmploymentNameSuffix(value: string): boolean {
   return /^(全职|兼职|小时工|寒假工|暑假工|长期工|短期工|临时工)$/.test(value);
+}
+
+function extractScopedStoreName(message: string): string | undefined {
+  const patterns = [
+    /(?:在|到|给|为)\s*([^，,。；;\n]+?(?:门店|店铺|店))\s*(?:下|里|中|内|这边|这里)?\s*(?:(?:帮我|给我|请|麻烦你)?(?:新建|新增|创建|发布|发|建)|[，,。；;\n]|$)/,
+    /(?:^|[，,。；;\s])([^，,。；;\n]+?(?:门店|店铺|店))\s*(?:下|里|中|内)(?:[，,。；;\s]|$)/,
+  ];
+
+  for (const pattern of patterns) {
+    const value = matchText(message, pattern);
+    if (!value) {
+      continue;
+    }
+    const cleaned = cleanupName(value);
+    if (cleaned && !/^(?:门店|店铺|店)$/.test(cleaned)) {
+      return cleaned;
+    }
+  }
+
+  return undefined;
 }
 
 function formatChineseClockTime(hourText: string, minuteText?: string): string {
@@ -914,6 +987,7 @@ function cleanupImplicitSearchName(value: string): string {
   return cleanupName(value)
     .replace(buildLeadingCityPattern(), '')
     .replace(/(?:这个|该|此)?(?:岗位|职位)$/, '')
+    .replace(/(?:的|下的|里的)$/, '')
     .replace(/(?:查询|搜索|查一下|查下|查|找一下|找下|找|看一下|看下|看|看看)(?:这个|该|此)?$/, '')
     .replace(/(?:相关)(?:的)?$/, '')
     .replace(/(?:这个|该|此)$/, '')
@@ -950,6 +1024,9 @@ function cleanupName(value: string): string {
 
 function cleanupReferenceName(value: string): string | undefined {
   let text = cleanupName(value);
+  text = text
+    .replace(/^(?:名称|名字|名)(?:是|为|叫|改为|改成|调整为|换成|换为|设为|设置为|命名为)?/, '')
+    .trim();
   const city = KNOWN_CITY_NAMES.find(item => text.startsWith(`${item}的`) || text.startsWith(`${item}市的`));
   if (city) {
     text = text.replace(new RegExp(`^${city}市?的`), '').trim();
